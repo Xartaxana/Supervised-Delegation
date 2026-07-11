@@ -10,9 +10,17 @@ contour question and takes it from there.
    `git clone <this-repo-url> my-project`
 2. If you cloned instead of templating, drop the history you don't
    want to keep: `rm -rf .git && git init`.
-3. Update the placeholders that are still generic: the project name in
-   README.md, and the copyright line in LICENSE if you're forking
-   under your own name.
+
+   If your project folder already exists — empty, with `git init`
+   already run in it — this step doesn't apply as written: clone the
+   template into a temporary folder (or a subfolder) instead of
+   directly into your project root, move its files into the root, and
+   leave your existing `.git` alone (skip `git init`).
+3. Retitle README.md for your own project if you want to — there's no
+   literal placeholder token in it, just the toolkit's own name as a
+   heading, so leaving it as-is is also fine. Update the copyright
+   line in LICENSE if you're forking this publicly under your own
+   name.
 4. Continue to Onboarding, below.
 
 ## Path B — Into an existing project
@@ -49,16 +57,12 @@ contour question and takes it from there.
 
 ## Onboarding
 
-Both paths converge here: run the onboarding skill. It asks one
-question — "Working on a Claude Code subscription, or on a set of API
-keys from different providers?" — writes the answer into
-`delegation.config.yaml`, runs the entrance exam for each bound model,
-and produces your first Boot Report. A failed exam doesn't block you —
-swap the model, or keep it anyway; exam failures land in your decision
-log (`DECISIONS.md`), not the routing journal.
-
-The onboarding skill is not part of this skeleton yet: it ships in the
-next build step of this template, under `.claude/skills/onboarding/`.
-Until it lands, you can bind `delegation.config.yaml` by hand (see the
-comments in that file) and read `BOOT.md` yourself to reach the same
-starting state.
+Both paths converge here: run the onboarding skill
+(`.claude/skills/onboarding/`). Invoking it is your authorization for
+the setup work it performs. It asks one question — "Working on a
+Claude Code subscription, or on a set of API keys from different
+providers?" — writes the answer into `delegation.config.yaml`, runs
+the entrance exam for each bound model, and produces your first Boot
+Report. A failed exam doesn't block you — swap the model, or keep it
+anyway; exam failures land in your decision log (`DECISIONS.md`), not
+the routing journal.

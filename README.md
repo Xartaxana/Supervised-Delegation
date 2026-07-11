@@ -12,6 +12,11 @@ evidence-gated: every accepted result carries a trail (what was
 checked), a witness (the actual verification output), or a critic
 verdict, never a self-certified "looks fine."
 
+The method's rationale and evidence base — the white paper, the
+decision log, and the findings each rule grew from — live in the
+development repository:
+[Operating-System-for-LLMs](https://github.com/Xartaxana/Operating-System-for-LLMs).
+
 ## Quick Start (10 minutes)
 
 1. Install the template — see INSTALL.md for the two paths (a new

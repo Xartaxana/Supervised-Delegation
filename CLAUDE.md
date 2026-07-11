@@ -124,7 +124,11 @@ separately in this deployment).
    covered / queued / n/a <why>" for EVERY axis of the current map,
    the line count follows the map; prose saying "axes are covered" is
    not an answer (a finding: recall fails silently, enumeration fails
-   loudly); (c) where the detector for this mechanism's failure is
+   loudly); the block answers for EVERY mechanism the commit carries
+   — several mechanisms in one commit mean a block per mechanism, or
+   one block whose lines close each mechanism by name (a finding:
+   enumeration done per commit instead of per mechanism degrades to
+   recall for the rest); (c) where the detector for this mechanism's failure is
    REGISTERED — a check in PROCESS/WEEKLY_CALIBRATION_PROTOCOL.md, or
    an externally named detector in the mechanism's own text. Question
    (c) applies to ALL mechanisms, old and new alike: a mechanism with
@@ -175,6 +179,14 @@ One JSON line per event, written with an Edit/Write tool:
 ```json
 {"ts":"2026-07-08T12:00:00","event":"delegated","agent":"builder","model":"sonnet","task_id":"t-042","category":"implementation","notes":"brief: what was delegated"}
 ```
+
+Every event line — including `journal_created` and `lead_degraded` —
+carries five base fields checked by `tools/journal_validator.py`:
+`ts`, `event`, `agent`, `category`, and a non-empty `notes`. `ts` must
+be ISO local time with NO timezone suffix (a trailing `Z` fails the
+gate). `lead_degraded`'s `reason`/`scope` fields are legal as extras
+on top of these five — they don't replace `notes`, which stays
+mandatory on every event.
 
 Typed fields (typed-fields rule; load-bearing facts go in fields,
 notes are a human-readable extra, not a fact carrier for gates):
@@ -344,4 +356,10 @@ operator. For all sessions and subagents in this repo:
    clock / a database / a provider); unverified claims need an
    explicit "estimate, not verified" label. Worker claims are already
    covered by witness/trail (the witness and trail-based acceptance
-   rules); this rule closes the gap for Lead itself.
+   rules); this rule closes the gap for Lead itself. The same class
+   covers ANY content search (grep/glob/script) over the repo: an
+   empty result is reportable only after a positive control of the
+   invocation — the same tool and syntax must find a sample known to
+   exist; an empty output without that control is a miscall, not
+   absence (shell-grep alternation needs -E; -P needs a UTF-8
+   locale).

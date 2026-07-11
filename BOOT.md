@@ -15,7 +15,9 @@ When starting a new session:
 4. Read DELEGATION_TABLE.md.
 5. Read CURRENT_CONTEXT.md.
 
-After loading these documents, produce a Boot Report:
+After loading these documents, produce a Boot Report per
+PROCESS/BOOT_REPORT_PROTOCOL.md (the template and its rules live
+there):
 
 - summarize the current state;
 - name the current milestone;

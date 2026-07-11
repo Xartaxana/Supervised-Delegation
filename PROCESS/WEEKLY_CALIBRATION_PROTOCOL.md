@@ -176,18 +176,19 @@ for the period, and diffs to DECISIONS.md.
     out which.
 14. **A golden set for recon, and a regression rule for prompt
     edits.** (a) Git log for the window on `.claude/agents/*.md`:
-    every edit to a tier's role file that has a golden set (by
-    default, scout), and every change to its `model:` frontmatter, is
-    accompanied by a Runs-log line in PROCESS/SCOUT_GOLDEN_SET.md in
-    the same commit; an edit with no run is a violation. (b) Key
+    every edit to a tier's role file that has an exam set (scout —
+    PROCESS/SCOUT_GOLDEN_SET.md; critic — PROCESS/CRITIC_EXAM.md,
+    both generated at onboarding), and every change to its `model:`
+    frontmatter, is accompanied by a Runs-log line in that set's
+    file in the same commit; an edit with no run is a violation. (b) Key
     liveness: run the verify commands for at least 2 questions in the
     set; a stale key is a bug in the eval itself — fix it BEFORE
     drawing any conclusion about scout degrading. (c) A rise in
     `failure_class=recon` for the window (check together with check
     3), with no out-of-cycle set run, means one should be scheduled.
-    (d) Edits to tier role files with NO golden set (builder — by
-    decision; critic — a set may be queued) get a note in the
-    `calibrated` event. (e) A fabrication guard for any exam or
+    (d) Edits to tier role files with NO exam set (builder — by
+    design: execution-based acceptance covers every task) get a note
+    in the `calibrated` event. (e) A fabrication guard for any exam or
     entrance run that goes through a non-Claude harness: every such
     run in the window is checked by `tools/pi_run_guard.py` and
     carries a guard verdict (a Runs-log line / journal event) BEFORE

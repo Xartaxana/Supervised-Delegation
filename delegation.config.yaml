@@ -77,6 +77,6 @@ exam:
   # A failed exam does not block use outright: the operator can
   # override it with an explicit word ("keep it anyway"). The override
   # itself is never silent — it produces an operator-facing warning
-  # plus a routing-journal event recording the override (model,
-  # score), so a later calibration pass can see it.
-  on_failure: "warning + journal event (operator override recorded)"
+  # plus a decision-log entry (DECISIONS.md) recording the override
+  # (model, score), so a later calibration pass can see it.
+  on_failure: "warning + decision-log entry (operator override recorded)"
