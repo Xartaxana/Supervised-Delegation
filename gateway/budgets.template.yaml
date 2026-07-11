@@ -1,0 +1,37 @@
+# Guard budget configuration (see guard.py). Copy to budgets.yaml and
+# replace the example alias names/numbers below with your own -- alias
+# names must match the `model_name` entries in config.yaml (which in
+# turn mirror delegation.config.yaml's roles).
+#
+# daily_usd: per gateway alias, per local calendar day.
+# A model without an entry falls back to "default";
+# no entry and no default means no limit for that model.
+
+warn_ratio: 0.8
+
+daily_usd:
+  default: 5.00
+  lead: 10.00   # example: a higher ceiling for the coordination tier
+
+# quota_windows: sliding-window TOKEN quotas -- separate from the $
+# budgets above, for provider-side free-tier limits (e.g. requests/
+# tokens per minute or per day) that are token-metered, not
+# dollar-metered, and roll continuously rather than resetting at a
+# calendar boundary (many providers' daily limits are a rolling 24h
+# window, not a calendar day -- verify yours before relying on a
+# calendar-day assumption). One or more {window_seconds, limit_tokens}
+# walls per gateway alias; each is a true rolling window over
+# prompt_tokens+completion_tokens in requests.db -- a request only ages
+# out once it is individually older than window_seconds, never at a
+# fixed clock boundary. No "default" fallback: a model absent here has
+# no token wall. No cross-model fallback either way: a wall blocks the
+# request, it never redirects to another model.
+#
+# Example below (a free-tier provider limit on the builder alias) --
+# replace with your own provider's published rate limits.
+quota_windows:
+  builder:
+    - window_seconds: 86400
+      limit_tokens: 100000
+    - window_seconds: 60
+      limit_tokens: 12000

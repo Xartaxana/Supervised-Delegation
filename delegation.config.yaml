@@ -1,0 +1,82 @@
+# delegation.config.yaml — Supervised Delegation binding point.
+#
+# This is the ONE file where function names (the policy vocabulary:
+# lead / critic / builder / scout — see CLAUDE.md) are bound to actual
+# models (a property of your deployment, not of the policy). CLAUDE.md
+# and the role profiles under .claude/agents/ never hardcode a model
+# name for a function; onboarding writes the binding here, once.
+# Changing a binding below does not change any rule.
+
+# contour: which deployment shape you are running.
+#   subscription — Claude Code subscription only (policy + agents + journal)
+#   api-keys     — API keys from one or more providers (adds gateway/)
+#   both         — subscription for coordination, API keys for extra workers
+contour: subscription   # subscription | api-keys | both
+
+roles:
+  # Coordination tier: decomposition, specs, acceptance, mechanisms.
+  # Subscription default binds to the strongest model you have access to.
+  lead:
+    subscription:
+      model: claude-fable-5
+    api:
+      provider:        # e.g. anthropic, groq, gemini
+      model:           # e.g. claude-opus-4-8, llama-3.3-70b-versatile
+      api_key_env:     # e.g. ANTHROPIC_API_KEY
+
+  # Mandatory acceptance gate for builder-class diffs (CLAUDE.md rule 3).
+  critic:
+    subscription:
+      model: claude-opus-4-8
+    api:
+      provider:
+      model:
+      api_key_env:
+
+  # Implementation from a written spec (CLAUDE.md rule 2).
+  builder:
+    subscription:
+      model: claude-sonnet-5
+    api:
+      provider:
+      model:
+      api_key_env:
+
+  # Recon: repo search, file reading, context gathering (CLAUDE.md rule 1).
+  scout:
+    subscription:
+      model: claude-haiku-4-5
+    api:
+      provider:
+      model:
+      api_key_env:
+
+  # api-contour only — Shadow Evaluation judge (a supervised worker,
+  # not a rules-level function; see CLAUDE.md's function/grade split).
+  judge:
+    scope: api-keys-only
+    api:
+      provider:
+      model:
+      api_key_env:
+
+  # api-contour only — the local Ledger/Guard analyst worker.
+  analyst:
+    scope: api-keys-only
+    api:
+      provider:
+      model:
+      api_key_env:
+
+# Entrance exams (see the onboarding skill, once installed under
+# .claude/skills/onboarding/). Every bound model is examined before it
+# starts carrying real traffic in its role.
+exam:
+  mandatory: true
+  override_allowed: true
+  # A failed exam does not block use outright: the operator can
+  # override it with an explicit word ("keep it anyway"). The override
+  # itself is never silent — it produces an operator-facing warning
+  # plus a routing-journal event recording the override (model,
+  # score), so a later calibration pass can see it.
+  on_failure: "warning + journal event (operator override recorded)"

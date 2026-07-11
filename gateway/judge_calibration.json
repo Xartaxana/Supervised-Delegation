@@ -1,0 +1,145 @@
+[
+  {
+    "prompt": "Reply with exactly one word: pong",
+    "source_model": "lead-gemini",
+    "source_response": "pong",
+    "target_model": "intern",
+    "target_response": "pong",
+    "category": "other",
+    "judge": "claude-fable-5 (manual, 2026-07-03)",
+    "verdict": "equivalent",
+    "rationale": "Both replied exactly: pong."
+  },
+  {
+    "prompt": "Write a python function that reverses a string, with a docstring.",
+    "source_model": "lead-gemini",
+    "source_response": "```python\ndef reverse_string(s: str) -> str:\n    \"\"\"Reverses a given string.\n\n    This function takes a string as input and returns a new string\n    that contains the characters of the original string in reverse order.\n\n    Args:\n        s: The input string to be reversed.\n\n    Returns:\n        A new string with the characters of `s` in reverse order.\n\n    Examples:\n        >>> reverse_string(\"hello\")\n        'olleh'\n        >>> reverse_string(\"Python\")\n        'nohtyP'\n        >>> reverse_string(\"\")\n        ''\n        >>> reverse_string(\"madam\")\n        'madam'\n    \"\"\"\n    return s[::-1]\n\n# Example usage:\nif __name__ == \"__main__\":\n    my_string = \"hello world\"\n    reversed_str = reverse_string(my_string)\n    print(f\"Original string: '{my_string}'\")\n    print(f\"Reversed string: '{reversed_str}'\")\n\n    another_string = \"programming\"\n    print(f\"Original string: '{another_string}'\")\n    print(f\"Reversed string: '{reverse_string(another_string)}'\")\n\n    empty_string = \"\"\n    print(f\"Original string: '{empty_string}'\")\n    print(f\"Reversed string: '{reverse_string(empty_string)}'\")\n\n    single_char_string = \"a\"\n    print(f\"Original string: '{single_char_string}'\")\n    print(f\"Reversed string: '{reverse_string(single_char_string)}'\")\n\n    # You can also use the help() function to see the docstring\n    # help(reverse_string)\n```",
+    "target_model": "intern",
+    "target_response": "To solve this problem, we need to write a Python function that reverses a given string. The solution should be efficient and include a clear docstring that explains the function's purpose, parameters, and return value.\n\n### Approach\n1. **Problem Analysis**: The task is to reverse a string. In Python, reversing a string can be efficiently achieved using slicing. The slice `[::-1]` creates a reversed copy of the string.\n2. **Key Insight**: Using Python's slicing feature allows us to reverse the string in constant time with minimal overhead, making the solution both optimal and concise.\n3. **Algorithm Selection**: The chosen algorithm involves slicing the input string from the end to the start. This approach is straightforward and leverages Python's built-in capabilities for string manipulation.\n\n### Solution Code\n```python\ndef reverse_string(s: str) -> str:\n    \"\"\"\n    Reverses the given string.\n\n    Args:\n        s (str): The string to be reversed.\n\n    Returns:\n        str: The reversed string.\n\n    Example:\n        >>> reverse_string(\"hello\")\n        'olleh'\n    \"\"\"\n    return s[::-1]\n```\n\n### Explanation\n1. **Function Definition**: The function `reverse_string` is defined to take a single parameter `s` of type `str`.\n2. **Slicing for Reversal**: The expression `s[::-1]` creates a new string that is the reverse of the input string `s`. This slice starts at the end of the string (`-1`), moves backward (`[::-1]`), and includes all characters.\n3. **Docstring**: The docstring provides a clear description of the function's purpose, parameters, return value, and includes a usage example for clarity.\n\nThis solution efficiently reverses any input string using Python's slicing mechanism, ensuring optimal performance and readability. The docstring adheres to standard practices for documenting Python functions, making the code more maintainable and understandable.",
+    "category": "coding",
+    "judge": "claude-fable-5 (manual, 2026-07-03)",
+    "verdict": "equivalent",
+    "rationale": "Both return s[::-1] with a proper docstring; intern is verbose but correct. difflib sim=0.10 falsely rejected this."
+  },
+  {
+    "prompt": "Write a python function that returns the n-th Fibonacci number iteratively.",
+    "source_model": "lead-gemini",
+    "source_response": "To calculate the n-th Fibonacci number iteratively, we can keep track of the two previous Fibonacci numbers in the sequence and update them in a loop. This avoids the inefficiency of recursive solutions that re-calculate the same numbers multiple times.\n\nThe Fibonacci sequence is commonly defined as:\n*   F(0) = 0\n*   F(1) = 1\n*   F(n) = F(n-1) + F(n-2) for n > 1\n\nHere's the Python function:\n\n```python\ndef get_nth_fibonacci_iterative(n: int) -> int:\n    \"\"\"\n    Calculates the n-th Fibonacci number iteratively.\n\n    The Fibonacci sequence typically starts: F(0)=0, F(1)=1, F(2)=1, F(3)=2, ...\n\n    Args:\n        n (int): The index of the Fibonacci number to retrieve.\n                 Must be a non-negative integer.\n\n    Returns:\n        int: The n-th Fibonacci number.\n\n    Raises:\n        ValueError: If n is a negative integer.\n    \"\"\"\n    if n < 0:\n        raise ValueError(\"Input must be a non-negative integer.\")\n    elif n == 0:\n        return 0\n    elif n == 1:\n        return 1\n    else:\n        # Initialize the first two Fibonacci numbers\n        # 'a' will store F(k-2) and 'b' will store F(k-1)\n        a, b = 0, 1\n\n        # Iterate from the 2nd number up to the n-th number\n        # We already have F(0) and F(1), so we need to calculate\n        # F(2), F(3), ..., F(n). The loop runs n-1 times.\n        # The range starts at 2 because we already handled n=0 and n=1,\n        # and we want to compute up to F(n).\n        for _ in range(2, n + 1):\n            # Calculate the next Fibonacci number\n            next_fib = a + b\n            # Shift the values: the current 'b' becomes the new 'a',\n            # and the 'next_fib' becomes the new 'b'.\n            a = b\n            b = next_fib\n        \n        # After the loop, 'b' holds the n-th Fibonacci number\n        return b\n\n# --- Test Cases ---\nprint(f\"F(0) = {get_nth_fibonacci_iterative(0)}\")   # Expected: 0\nprint(f\"F(1) = {get_nth_fibonacci_iterative(1)}\")   # Expected: 1\nprint(f\"F(2) = {get_nth_fibonacci_iterative(2)}\")   # Expected: 1\nprint(f\"F(3) = {get_nth_fibonacci_iterative(3)}\")   # Expected: 2\nprint(f\"F(4) = {get_nth_fibonacci_iterative(4)}\")   # Expected: 3\nprint(f\"F(5) = {get_nth_fibonacci_iterative(5)}\")   # Expected: 5\nprint(f\"F(10) = {get_nth_fibonacci_iterative(10)}\") # Expected: 55\nprint(f\"F(15) = {get_nth_fibonacci_iterative(15)}\") # Expected: 610\n\n# Test for negative input\ntry:\n    print(f\"F(-1) = {get_nth_fibonacci_iterative(-1)}\")\nexcept ValueError as e:\n    print(e)\n```",
+    "target_model": "intern",
+    "target_response": "To solve this problem, we need to write a Python function that returns the n-th Fibonacci number iteratively. The Fibonacci sequence is defined such that each number is the sum of the two preceding ones, starting from 0 and 1. Specifically, the sequence is:\n- F(0) = 0\n- F(1) = 1\n- F(n) = F(n-1) + F(n-2) for n >= 2\n\n### Approach\nThe approach involves using an iterative method to compute the n-th Fibonacci number without recursion, which ensures optimal performance and efficiency. The key steps are:\n1. **Initialization**: Start with the first two Fibonacci numbers, `a = 0` (F(0)) and `b = 1` (F(1)).\n2. **Iteration**: For each subsequent number from 2 to n, update the values of `a` and `b` such that:\n   - `a` takes the value of `b` (the next number in the sequence)\n   - `b` takes the value of `a + b` (the sum of the previous two numbers)\n3. **Termination**: After `n` iterations, `a` will hold the value of the n-th Fibonacci number.\n\nThis approach efficiently computes the result in O(n) time with O(1) space complexity, making it suitable for large values of n.\n\n### Solution Code\n```python\ndef fibonacci(n):\n    a, b = 0, 1\n    for _ in range(n):\n        a, b = b, a + b\n    return a\n```\n\n### Explanation\n- **Initialization**: The variables `a` and `b` are initialized to 0 and 1, representing the first two Fibonacci numbers (F(0) and F(1)).\n- **Loop Execution**: The loop runs `n` times. In each iteration:\n  - `a` is updated to the value of `b` (the next number in the sequence).\n  - `b` is updated to the sum of the previous `a` and `b` (the subsequent number in the sequence).\n- **Result**: After completing `n` iterations, `a` contains the n-th Fibonacci number. For example:\n  - If `n = 0`, the loop doesn't run, and `a` remains 0 (F(0)).\n  - If `n = 1`, the loop runs once, updating `a` to 1 (F(1)).\n  - If `n = 2`, the loop runs twice, updating `a` to 1 (F(2)).\n\nThis iterative method efficiently computes the result without the overhead of recursion, ensuring optimal performance for any non-negative integer `n`.",
+    "category": "coding",
+    "judge": "claude-fable-5 (manual, 2026-07-03)",
+    "verdict": "equivalent",
+    "rationale": "Both give a correct iterative two-variable loop; intern verbose but correct. difflib falsely rejected this."
+  },
+  {
+    "prompt": "Summarize in one sentence: Solar panels convert sunlight into electricity using photovoltaic cells, and their efficiency has improved steadily while costs have fallen dramatically over the past decade.",
+    "source_model": "lead-gemini",
+    "source_response": "Solar panels utilize photovoltaic cells to convert sunlight into electricity, having steadily improved in efficiency and dramatically decreased in cost over the past decade.",
+    "target_model": "intern",
+    "target_response": "Solar panels generate electricity from sunlight using photovoltaic cells, with efficiency steadily rising and costs significantly dropping over the past decade.",
+    "category": "summarization",
+    "judge": "claude-fable-5 (manual, 2026-07-03)",
+    "verdict": "equivalent",
+    "rationale": "Both one-sentence summaries are accurate and complete."
+  },
+  {
+    "prompt": "Summarize in two sentences: The Roman Empire expanded across the Mediterranean through military conquest and political alliances, eventually splitting into western and eastern halves that followed very different historical paths.",
+    "source_model": "lead-gemini",
+    "source_response": "The Roman Empire expanded across the Mediterranean via military conquest and political alliances. It eventually split into western and eastern halves, which then followed very different historical paths.",
+    "target_model": "intern",
+    "target_response": "The Roman Empire expanded across the Mediterranean through military conquest and strategic alliances. This empire later split into Western and Eastern halves, which followed divergent historical paths.",
+    "category": "summarization",
+    "judge": "claude-fable-5 (manual, 2026-07-03)",
+    "verdict": "equivalent",
+    "rationale": "Both two-sentence summaries are accurate and complete."
+  },
+  {
+    "prompt": "Extract to JSON with keys city and population: Berlin has about 3.7 million residents.",
+    "source_model": "lead-gemini",
+    "source_response": "```json\n{\n  \"city\": \"Berlin\",\n  \"population\": \"3.7 million\"\n}\n```",
+    "target_model": "intern",
+    "target_response": "{\n  \"city\": \"Berlin\",\n  \"population\": \"3.7 million\"\n}",
+    "category": "extraction",
+    "judge": "claude-fable-5 (manual, 2026-07-03)",
+    "verdict": "equivalent",
+    "rationale": "Identical JSON content; gemini adds a markdown code fence, intern emits raw JSON (arguably cleaner)."
+  },
+  {
+    "prompt": "Extract to JSON with keys product, price, currency: The laptop costs 999 euros.",
+    "source_model": "lead-gemini",
+    "source_response": "```json\n{\n  \"product\": \"laptop\",\n  \"price\": 999,\n  \"currency\": \"euros\"\n}\n```",
+    "target_model": "intern",
+    "target_response": "{\n  \"product\": \"laptop\",\n  \"price\": 999,\n  \"currency\": \"euros\"\n}",
+    "category": "extraction",
+    "judge": "claude-fable-5 (manual, 2026-07-03)",
+    "verdict": "equivalent",
+    "rationale": "Identical JSON content modulo code fence."
+  },
+  {
+    "prompt": "Classify the sentiment of this review as positive, negative or neutral: The battery life is terrible but the screen is gorgeous.",
+    "source_model": "lead-gemini",
+    "source_response": "This sentiment is **neutral**, as it contains both strong negative (\"terrible battery life\") and strong positive (\"gorgeous screen\") elements that balance each other out. It's a mixed review.",
+    "target_model": "intern",
+    "target_response": "Based on the review **\"The battery life is terrible but the screen is gorgeous\"**, the sentiment is **negative**.  \n\n### Why?  \n1. **Key words and contrast**:  \n   - \"The battery life is **terrible**\" → Strong negative statement (emphasizes a critical flaw).  \n   - \"but\" → Indicates a contrast where the negative aspect (\"terrible battery life\") is **explicitly prioritized** over the positive (\"gorgeous screen\").  \n   - In sentiment analysis, when a review uses \"but\" to highlight a *major drawback* (here, \"terrible\") against a positive feature, the **overall sentiment is dominated by the negative**. This is common in real-world reviews (e.g., \"The phone is slow but the camera is great\" → still classified as *negative* because the critical flaw outweighs the positive).  \n\n2. **Why not neutral or positive?**  \n   - **Neutral**: Incorrect. The review contains clear positive (\"gorgeous\") and negative (\"terrible\") sentiment, but the *contrast* and emphasis on the negative make it **not neutral**. Neutral would require no strong emotional bias (e.g., \"The battery life is okay, and the screen is okay\").  \n   - **Positive**: Incorrect. While the screen is praised, the phrase \"battery life is terrible\" is a *significant negative* that overshadows the positive. The word \"but\" signals that the negative is the primary concern.  \n\n### Real-World Context:  \nThis phrasing is typical in product reviews where users acknowledge strengths but highlight a critical weakness that diminishes the overall experience. For example:  \n> *\"Battery life is terrible but the screen is gorgeous\"* → **User is frustrated** with the battery (a core issue for most users), even though they love the screen. The negative impact is more impactful here.  \n\n**Final classification: Negative** 🟡",
+    "category": "classification",
+    "judge": "claude-fable-5 (manual, 2026-07-03)",
+    "verdict": "target_worse",
+    "rationale": "Genuine disagreement: gemini says neutral (mixed review), intern says negative AND its reasoning is flawed - it claims \"but\" prioritizes the negative although the negative clause comes before \"but\", so the construction emphasizes the positive. Note difflib sim=0.04 flagged this pair for the wrong reason (verbosity, not semantics)."
+  },
+  {
+    "prompt": "Classify this email subject as spam or not spam: Meeting moved to 3pm tomorrow.",
+    "source_model": "lead-gemini",
+    "source_response": "**Not Spam**\n\nHere's why:\n\n*   **Specific and Actionable:** It contains clear, specific information (\"3pm tomorrow\") about a known event (\"Meeting moved\").\n*   **Implies Pre-existing Context:** The word \"moved\" suggests there was an original meeting scheduled, making it relevant to someone's existing calendar.\n*   **Lacks Spam Red Flags:** It's not vague, sensational, grammatically incorrect, or trying to elicit an immediate, emotional response. It doesn't promise money, threaten account closure, or demand urgent action without context.\n\nWhile any email *could* be used for phishing if the sender is malicious, the subject line itself strongly suggests legitimate communication about a schedule change.",
+    "target_model": "intern",
+    "target_response": "Based on standard spam classification criteria (like urgency, vague language, suspicious time references, or common spam patterns), **this email subject is classified as \"not spam\"**.\n\n### Why?\n1. **Clear, specific time reference**: \"3pm tomorrow\" is a precise, professional time detail (common in legitimate work emails).\n2. **No spam triggers**: \n   - No urgent language (\"Urgent!\", \"Act now!\").\n   - No vague terms (\"free\", \"offer\", \"click here\").\n   - No suspicious patterns (e.g., \"meeting moved\" is a typical professional phrasing).\n3. **Realistic context**: This is a natural subject line for a work-related update (e.g., a colleague rescheduling a meeting). Spam emails rarely use this straightforward, time-specific phrasing.\n4. **No red flags**: Spam filters typically block subjects with high urgency, financial requests, or odd time references (e.g., \"3pm\" is standard, not \"3:00pm\" with extra punctuation).\n\n### Comparison to common spam patterns:\n| **Spam Pattern**          | **This Subject**               |\n|---------------------------|--------------------------------|\n| Urgent language            | ❌ (No urgency)                |\n| Vague time (\"tomorrow\")    | ✅ (Specific: \"3pm tomorrow\")  |\n| Promotional language       | ❌ (No sales/offers)           |\n| Suspicious time references | ❌ (Standard professional time)|\n| \"Click here\" or links      | ❌ (No links mentioned)        |\n\n### Conclusion:\nThis subject line is **legitimate and non-spam**. It’s a typical professional update about a meeting change — exactly what you’d expect from a colleague or team email. Spam filters would **not** flag this as spam.\n\n**Final classification: Not spam** 🔒",
+    "category": "classification",
+    "judge": "claude-fable-5 (manual, 2026-07-03)",
+    "verdict": "equivalent",
+    "rationale": "Both classify as not spam with sound reasoning."
+  },
+  {
+    "prompt": "Format as a markdown table with columns Name and Role: Alice is an engineer, Bob is a designer.",
+    "source_model": "lead-gemini",
+    "source_response": "| Name  | Role     |\n|-------|----------|\n| Alice | engineer |\n| Bob   | designer |",
+    "target_model": "intern",
+    "target_response": "Here's the markdown table as requested:\n\n| Name  | Role       |\n|-------|-------------|\n| Alice | Engineer    |\n| Bob   | Designer    |",
+    "category": "formatting",
+    "judge": "claude-fable-5 (manual, 2026-07-03)",
+    "verdict": "equivalent",
+    "rationale": "Both produce a correct markdown table; intern adds a preamble and capitalizes roles - cosmetic."
+  },
+  {
+    "prompt": "Format this list as markdown bullet points: apples, oranges, bananas.",
+    "source_model": "lead-gemini",
+    "source_response": "*   apples\n*   oranges\n*   bananas",
+    "target_model": "intern",
+    "target_response": "Here's the formatted list as markdown bullet points:\n\n- apples\n- oranges\n- bananas",
+    "category": "formatting",
+    "judge": "claude-fable-5 (manual, 2026-07-03)",
+    "verdict": "equivalent",
+    "rationale": "Both produce correct bullet points; intern adds a preamble - cosmetic."
+  },
+  {
+    "prompt": "Write a python function that reverses a string, with a docstring.",
+    "source_model": "lead-gemini",
+    "source_response": "```python\ndef reverse_string(s: str) -> str:\n    \"\"\"Reverses a given string.\n\n    This function takes a string as input and returns a new string\n    that contains the characters of the original string in reverse order.\n\n    Args:\n        s: The input string to be reversed.\n\n    Returns:\n        A new string with the characters of `s` in reverse order.\n\n    Examples:\n        >>> reverse_string(\"hello\")\n        'olleh'\n        >>> reverse_string(\"Python\")\n        'nohtyP'\n        >>> reverse_string(\"\")\n        ''\n        >>> reverse_string(\"madam\")\n        'madam'\n    \"\"\"\n    return s[::-1]\n\n# Example usage:\nif __name__ == \"__main__\":\n    my_string = \"hello world\"\n    reversed_str = reverse_string(my_string)\n    print(f\"Original string: '{my_string}'\")\n    print(f\"Reversed string: '{reversed_str}'\")\n\n    another_string = \"programming\"\n    print(f\"Original string: '{another_string}'\")\n    print(f\"Reversed string: '{reverse_string(another_string)}'\")\n\n    empty_string = \"\"\n    print(f\"Original string: '{empty_string}'\")\n    print(f\"Reversed string: '{reverse_string(empty_string)}'\")\n\n    single_char_string = \"a\"\n    print(f\"Original string: '{single_char_string}'\")\n    print(f\"Reversed string: '{reverse_string(single_char_string)}'\")\n\n    # You can also use the help() function to see the docstring\n    # help(reverse_string)\n```",
+    "target_model": "middle-groq",
+    "target_response": "```python\ndef reverse_string(input_str: str) -> str:\n    \"\"\"\n    Reverses the input string.\n\n    Args:\n        input_str (str): The string to be reversed.\n\n    Returns:\n        str: The reversed string.\n\n    Example:\n        >>> reverse_string(\"hello\")\n        'olleh'\n    \"\"\"\n    return input_str[::-1]\n```",
+    "category": "coding",
+    "judge": "claude-fable-5 (chief judge, 2026-07-03)",
+    "verdict": "equivalent",
+    "rationale": "Both return the slice reversal with a proper docstring; middle-groq is terser. Chief-judge review of the coding->Middle run confirmed EQUIVALENT."
+  },
+  {
+    "prompt": "Write a python function that returns the n-th Fibonacci number iteratively.",
+    "source_model": "lead-gemini",
+    "source_response": "To calculate the n-th Fibonacci number iteratively, we can keep track of the two previous Fibonacci numbers in the sequence and update them in a loop. This avoids the inefficiency of recursive solutions that re-calculate the same numbers multiple times.\n\nThe Fibonacci sequence is commonly defined as:\n*   F(0) = 0\n*   F(1) = 1\n*   F(n) = F(n-1) + F(n-2) for n > 1\n\nHere's the Python function:\n\n```python\ndef get_nth_fibonacci_iterative(n: int) -> int:\n    \"\"\"\n    Calculates the n-th Fibonacci number iteratively.\n\n    The Fibonacci sequence typically starts: F(0)=0, F(1)=1, F(2)=1, F(3)=2, ...\n\n    Args:\n        n (int): The index of the Fibonacci number to retrieve.\n                 Must be a non-negative integer.\n\n    Returns:\n        int: The n-th Fibonacci number.\n\n    Raises:\n        ValueError: If n is a negative integer.\n    \"\"\"\n    if n < 0:\n        raise ValueError(\"Input must be a non-negative integer.\")\n    elif n == 0:\n        return 0\n    elif n == 1:\n        return 1\n    else:\n        # Initialize the first two Fibonacci numbers\n        # 'a' will store F(k-2) and 'b' will store F(k-1)\n        a, b = 0, 1\n\n        # Iterate from the 2nd number up to the n-th number\n        # We already have F(0) and F(1), so we need to calculate\n        # F(2), F(3), ..., F(n). The loop runs n-1 times.\n        # The range starts at 2 because we already handled n=0 and n=1,\n        # and we want to compute up to F(n).\n        for _ in range(2, n + 1):\n            # Calculate the next Fibonacci number\n            next_fib = a + b\n            # Shift the values: the current 'b' becomes the new 'a',\n            # and the 'next_fib' becomes the new 'b'.\n            a = b\n            b = next_fib\n        \n        # After the loop, 'b' holds the n-th Fibonacci number\n        return b\n\n# --- Test Cases ---\nprint(f\"F(0) = {get_nth_fibonacci_iterative(0)}\")   # Expected: 0\nprint(f\"F(1) = {get_nth_fibonacci_iterative(1)}\")   # Expected: 1\nprint(f\"F(2) = {get_nth_fibonacci_iterative(2)}\")   # Expected: 1\nprint(f\"F(3) = {get_nth_fibonacci_iterative(3)}\")   # Expected: 2\nprint(f\"F(4) = {get_nth_fibonacci_iterative(4)}\")   # Expected: 3\nprint(f\"F(5) = {get_nth_fibonacci_iterative(5)}\")   # Expected: 5\nprint(f\"F(10) = {get_nth_fibonacci_iterative(10)}\") # Expected: 55\nprint(f\"F(15) = {get_nth_fibonacci_iterative(15)}\") # Expected: 610\n\n# Test for negative input\ntry:\n    print(f\"F(-1) = {get_nth_fibonacci_iterative(-1)}\")\nexcept ValueError as e:\n    print(e)\n```",
+    "target_model": "middle-groq",
+    "target_response": "### Fibonacci Function in Python\n#### Overview\nThe Fibonacci sequence is a series of numbers in which each number is the sum of the two preceding ones, usually starting with 0 and 1.\n\n#### Code\n```python\ndef fibonacci(n):\n    \"\"\"\n    Returns the n-th Fibonacci number iteratively.\n\n    Args:\n        n (int): The position of the Fibonacci number to return.\n\n    Returns:\n        int: The n-th Fibonacci number.\n\n    Raises:\n        ValueError: If n is a negative integer.\n    \"\"\"\n    if not isinstance(n, int) or n < 0:\n        raise ValueError(\"Input must be a non-negative integer.\")\n\n    # Handle base cases\n    if n == 0:\n        return 0\n    elif n == 1:\n        return 1\n\n    # Initialize variables for the Fibonacci sequence\n    a, b = 0, 1\n\n    # Calculate the n-th Fibonacci number\n    for _ in range(2, n + 1):\n        a, b = b, a + b\n\n    return b\n\n# Example usage\nif __name__ == \"__main__\":\n    n = 10\n    result = fibonacci(n)\n    print(f\"The {n}-th Fibonacci number is: {result}\")\n```\n\n#### Explanation\nThis function uses an iterative approach to calculate the n-th Fibonacci number. It starts by checking if the input `n` is a non-negative integer and raises a `ValueError` if it's not.\n\nFor the base cases (`n == 0` and `n == 1`), the function returns the corresponding Fibonacci numbers directly.\n\nFor `n >= 2`, the function initializes two variables `a` and `b` to the first two Fibonacci numbers (0 and 1). It then enters a loop that runs from 2 to `n` (inclusive). In each iteration, it updates `a` and `b` to the next two numbers in the sequence by swapping them and adding the previous `a` to `b`.\n\nFinally, the function returns the `n`-th Fibonacci number, which is stored in `b` after the loop completes.\n\nYou can modify the `n` variable in the example usage section to calculate different Fibonacci numbers.",
+    "category": "coding",
+    "judge": "claude-fable-5 (chief judge, 2026-07-03)",
+    "verdict": "equivalent",
+    "rationale": "Both give a correct iterative loop; middle-groq adds base cases and input validation. Traced n=2/n=3 manually. Chief-judge review confirmed EQUIVALENT."
+  }
+]

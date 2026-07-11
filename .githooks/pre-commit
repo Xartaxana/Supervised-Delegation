@@ -1,0 +1,4 @@
+#!/bin/sh
+# Routing-journal validator: the staged logs/routing-log.jsonl doesn't
+# break append-only / typed fields / the role-vs-tier acceptance matrix.
+python tools/journal_validator.py

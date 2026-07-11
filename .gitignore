@@ -1,0 +1,8 @@
+# Live data of this deployment -- never commit
+gateway/*.db
+gateway/*.log
+.env
+gateway/.env
+__pycache__/
+*.pyc
+.pytest_cache/
