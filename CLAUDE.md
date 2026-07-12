@@ -207,7 +207,14 @@ from the session's narrative (finding: timestamp taken from the
 session's narrative instead of the clock); a wrong `ts` noticed later
 is not rewritten — a note on the next event's notes field; the
 reference for reconciliation is your usage database / usage reports /
-git log (check 13(f) of PROCESS/WEEKLY_CALIBRATION_PROTOCOL.md).
+git log (check 13(f) of PROCESS/WEEKLY_CALIBRATION_PROTOCOL.md). A
+MISSED event noticed later (a dispatch or acceptance that happened
+with no journal line — the silent-journal-leak class) is repaired by
+a RETRO pair: append `delegated`/`accepted` NOW, with the current
+`ts`, a "retroactive" mark and the event's actual boundaries in
+`notes`; inserting lines into the past is forbidden (append-only);
+the pattern mirrors the retroactive `lead_degraded` of the Lead
+degradation section, and calibration watches the retro-entry stream.
 
 The `model` field is mandatory for delegated/escalated/accepted/
 rejected — a self-declaration by Lead; calibration reconciles it
@@ -224,8 +231,16 @@ accepting model); `accepted` for scout/builder/critic is legitimate
 when tier(by) is above the tier of `agent`, OR with a `basis` field:
 "critic" / "queued-to-lead" — the role-vs-tier acceptance matrix
 encoded; for non-Claude workers the `basis` field is mandatory on
-`by`. The validator's own failure detector is a dedicated pair of
-calibration checks. Events: `delegated`, `accepted`, `rejected`
+`by`. `by` and `model` are DIFFERENT formats, on purpose: `by` must be
+a bare tier keyword from `TIER_ORDER` in `tools/journal_validator.py`
+(`haiku`/`sonnet`/`opus`/`fable`) — the validator compares tiers
+numerically, so a full model id (e.g. `"claude-opus-4-8"`) matches no
+`TIER_ORDER` key and silently fails the tier comparison (no crash,
+just an unconditional fail); `model` has no such constraint — it's
+free-form, and a full model id there is recommended, since it's more
+useful for calibration than a bare tier keyword. The validator's own
+failure detector is a dedicated pair of calibration checks. Events:
+`delegated`, `accepted`, `rejected`
 (rejected at acceptance — a failed attempt per rule 6; a rejection is
 a failed attempt), `escalated`, `decomposable`, `dispatch_skipped`
 (reason mandatory), `defect_found` (a late defect in ACCEPTED work;
@@ -361,5 +376,9 @@ operator. For all sessions and subagents in this repo:
    empty result is reportable only after a positive control of the
    invocation — the same tool and syntax must find a sample known to
    exist; an empty output without that control is a miscall, not
-   absence (shell-grep alternation needs -E; -P needs a UTF-8
-   locale).
+   absence. The control must share the SHAPE of the checked call
+   (case profile, type/glob filters): a control with a different
+   pattern proves the pipe, not the absence (shell-grep alternation
+   needs -E; -P needs a UTF-8 locale; the Grep tool is
+   case-sensitive by default — a content-negative claim requires a
+   case-insensitive search).

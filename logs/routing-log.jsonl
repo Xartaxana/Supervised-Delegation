@@ -1,1 +1,1 @@
-{"ts":"{SET_AT_INSTALL}","event":"journal_created","notes":"journal initialized by onboarding"}
+{"ts":"{SET_AT_INSTALL}","event":"journal_created","agent":"system","category":"meta","notes":"journal initialized by onboarding"}

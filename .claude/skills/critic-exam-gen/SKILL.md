@@ -114,6 +114,14 @@ that triggers a re-run).
    to review against — see `.claude/agents/critic.md`). Never reveal,
    in the dispatch or anywhere the critic can see, that this is an
    exam; that knowledge changes the behavior under measurement.
+   Prevention: the dispatch prompt must explicitly scope the review
+   AWAY from `PROCESS/` and `docs/` (e.g. "review the diff against the
+   attached spec; no need to read anything under PROCESS/ or docs/") —
+   a critic that goes looking through those directories on its own
+   initiative is the exact path that surfaces `PROCESS/CRITIC_EXAM.md`
+   itself and contaminates the run (a recorded pattern: a critic given
+   the whole repo to review grepped broadly enough to find the exam
+   file unprompted).
 
 4. **Score against the pre-registered key.** For every miss, check the
    key itself for a bug FIRST, before concluding the critic failed —
@@ -124,6 +132,17 @@ that triggers a re-run).
    result, regenerate a fresh diff and key, and re-run; don't try to
    salvage a contaminated verdict by reasoning about what it "would
    have" found.
+
+   No salvage clause here, unlike `scout-exam-gen`'s golden set — this
+   is by design, not an oversight. Scout's answers each trace to a
+   primary source outside the golden-set file, independent of it, so a
+   contaminated scout run can still be checked answer-by-answer against
+   those primary sources. A critic's findings on a seeded diff can't be
+   traced the same way: the key file describes the planted defects
+   themselves, so once the critic has read it, there's no way to tell
+   whether a correct finding came from genuinely spotting the defect or
+   from having just read its description — the contamination taints
+   the very evidence that would be needed to salvage it.
 
 5. **Log the run.** Append one line per run under a "## Runs log"
    heading in `PROCESS/CRITIC_EXAM.md` itself: date — trigger — model

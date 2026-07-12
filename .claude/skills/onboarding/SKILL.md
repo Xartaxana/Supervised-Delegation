@@ -54,6 +54,27 @@ CLAUDE.md wins and that's a bug report against this file.
 
 3. **Exams.** `delegation.config.yaml`'s `exam` block marks this
    mandatory, with failure overridable by explicit operator word.
+
+   Exam dispatches are ordinary dispatches, and the journal duty
+   starts here, not at the first "real" task: initialize the journal
+   first (replace the `{SET_AT_INSTALL}` placeholder — the same init
+   detailed in step 5), then record every exam dispatch as a
+   `delegated` event and its scoring as `accepted`/`rejected` in
+   `logs/routing-log.jsonl`. A dispatch discovered unjournaled later
+   is repaired by the retroactive-entry rule in CLAUDE.md's journal
+   section (append a marked retro pair now), never by inserting lines
+   into the past.
+
+   Retry discipline: a failed exam may be re-run unchanged from a
+   fresh context (a re-roll), or re-run after a fix to the ROLE FILE
+   (a regression re-run — mind the agent-definition cache: fresh
+   session or inline delivery, noted). Adding hints to the dispatch
+   ("watch for negative claims") invalidates the run as a measure of
+   working behavior: a hinted run may guide your fix, and its result
+   is recorded in the Runs log as `conditioned` — it is never the
+   exam's PASS, and the keep-or-replace decision below uses the last
+   unconditioned score.
+
    Run the exam defined for each role below; roles listed without one
    state the reason:
    - **scout**: first run the `scout-exam-gen` skill (it writes a
@@ -99,11 +120,41 @@ CLAUDE.md wins and that's a bug report against this file.
    entrance exam (score <score>); explicit operator decision at
    onboarding.`
 
-4. **Init.**
+4. **Symmetry map seeding (existing projects — Path B installs).**
+   The shipped `docs/SIBLING_MAP.md` carries only the toolkit's own
+   two axes; an existing project arrives with symmetries of its own,
+   and this is the one cheap moment to harvest them. Dispatch scout
+   (the bound recon model) with the concrete question: "which
+   genuinely PAIRED or MIRRORED structures exist in this repository —
+   files/directories that must change together, where editing one
+   side silently breaks the other?" Accept the digest by its trail.
+   Do not ask the operator to enumerate symmetries from memory — the
+   owner of a vibe-coded project may never have looked inside; the
+   repository is surveyed, the operator JUDGES. Ask the operator only
+   the one question scout cannot answer by construction: symmetries
+   invisible from inside this repository (a second repository, an
+   external deployment, a mirrored copy of this policy elsewhere).
+
+   Tier split (Role ≠ tier, CLAUDE.md): DRAFTING candidate axes from
+   the digest is coordinator work at any tier; DECIDING which
+   candidates become tracked axes — and writing them into
+   `docs/SIBLING_MAP.md` — is Lead-tier judgment, because every axis
+   taxes every future mechanism commit with an enumeration line. If
+   the model running this skill is below the lead binding, put the
+   drafted candidates into CURRENT_CONTEXT.md's "Lead Queue" section
+   and stop; the map write belongs to a lead-tier session or the
+   operator's explicit word. Only pairs confirmed as real recurring
+   duties become axes; zero confirmed project axes is a legal
+   outcome, recorded as an explicit dated line in the map. Fresh
+   empty projects (Path A): skip this step — nothing to map yet;
+   axes arrive with the first real symmetry.
+
+5. **Init.**
    - `git config core.hooksPath .githooks`.
    - Replace the `{SET_AT_INSTALL}` placeholder timestamp in
      `logs/routing-log.jsonl`'s seed `journal_created` line with the
-     real install time (read the clock, don't narrate it).
+     real install time (read the clock, don't narrate it) — if not
+     already done before the exams in step 3.
    - Produce the first Boot Report per `BOOT.md`.
    - Show the operator, in one paragraph, "what pings you" — the four
      cases from `README.md`: two failed top-tier acceptances with
@@ -118,4 +169,9 @@ The next Boot Report sees an unfilled `delegation.config.yaml` (blank
 `api` fields under an `api-keys`/`both` contour, or a `lead` binding
 never walked through step 2) or a journal whose `journal_created` line
 still carries the literal `{SET_AT_INSTALL}` placeholder — either one
-means this skill's steps were skipped or left unfinished.
+means this skill's steps were skipped or left unfinished. Two quieter
+leaks with the same meaning: exam scores present in a Runs log while
+the journal holds only `journal_created` (step 3's journaling was
+skipped — repair by retro entries), and a Path B install whose
+`docs/SIBLING_MAP.md` carries neither a project axis nor the explicit
+dated "no confirmed project axes" line (step 4 was skipped).

@@ -60,3 +60,11 @@ this deployment. A new symmetry noticed but not fixed now is recorded
 here as a queued axis, not left to be rediscovered later. An axis
 whose symmetry has disappeared (a paired file deleted, a mechanism
 retired) is removed in the same commit that removes the symmetry.
+
+Drafting is not writing (Role ≠ tier, CLAUDE.md): a coordinator below
+the lead binding may survey, draft and argue candidate axes — but the
+write into this file is Lead-tier judgment (each axis taxes every
+future mechanism commit with an enumeration line). Below-lead
+sessions put drafted axes into CURRENT_CONTEXT.md's "Lead Queue"
+section; recognizing "this is Lead-tier" and writing anyway is the
+recorded failure mode, not initiative.

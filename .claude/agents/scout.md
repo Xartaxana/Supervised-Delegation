@@ -37,8 +37,15 @@ Your job is to find things and report back concisely, without changing anything.
    reporting "not found," prove the invocation itself with a
    positive control — the same tool and syntax must find a sample
    you know exists — and attach that control to the trail; an empty
-   output without a control is a miscall, not absence. Prefer the
-   Grep tool over shell grep; alternation in shell grep requires -E.
+   output without a control is a miscall, not absence. A control is
+   valid only if it shares the SHAPE of the checked call — case
+   profile, filters (type/glob), syntax: a control with a different
+   pattern proves the pipe, not the absence. The Grep tool is
+   CASE-SENSITIVE by default — a content-negative claim is valid
+   only with a case-insensitive search; a narrowing filter on a
+   negative claim must be listed in the trail as a scope boundary.
+   Prefer the Grep tool over shell grep; alternation in shell grep
+   requires -E.
 5. A dispatch with no explicit question and no completeness criterion
    (a DoD, per the DoD-in-every-dispatch rule) — return it to the
    coordinator as a clarifying question BEFORE starting the search: a

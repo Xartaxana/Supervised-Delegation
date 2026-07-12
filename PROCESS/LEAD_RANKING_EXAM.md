@@ -25,7 +25,15 @@ set):
 3. A new run = a line in the Runs log below, plus a routing-journal
    entry (category evaluation). Judged by a chief judge one tier
    above the candidate; the rubric and keys are pre-registered HERE,
-   before the run.
+   before the run. Ceiling case: if the candidate is already at the
+   top of this deployment's tier order (`TIER_ORDER` in
+   `tools/journal_validator.py`), no model above it exists to judge —
+   use the strongest available OTHER model instead (one tier below the
+   candidate, if no other tier-mate exists). Record the deviation
+   explicitly, both in the Runs log line for that run and in the
+   routing-journal event; a verdict whose judge is not strictly above
+   the candidate's tier carries reduced weight — flag that in the Runs
+   log line too.
 4. Instrument calibration: exam verdicts are used only after control
    runs by candidates of KNOWN tiers; saturation by a lower-tier
    control means the instrument does not rank.

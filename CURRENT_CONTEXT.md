@@ -20,6 +20,20 @@ This file is read on every boot — keep it short.
 
 <!-- Next tasks in priority order, one line each. -->
 
+## Lead Queue
+
+<!-- Lead-tier work waiting for a lead-tier session. A coordinator
+     whose actual model is BELOW the lead binding (see "Role ≠ tier"
+     in CLAUDE.md) PUTS Lead-class work here instead of doing it:
+     mechanism changes, decision-log entries, table statuses, symmetry
+     axes for docs/SIBLING_MAP.md, acceptances it may not perform.
+     One line each: what, why it's Lead-class, where the draft lives.
+     Recognizing "this is Lead-tier" and then doing it yourself anyway
+     is the recorded failure mode this section exists to prevent — the
+     handoff needs a place to land, and this is that place. The next
+     lead-tier session (or the operator's explicit word) works this
+     queue and deletes served lines. -->
+
 ## Environment Notes
 
 <!-- Machine- or account-specific facts a fresh session needs, so it

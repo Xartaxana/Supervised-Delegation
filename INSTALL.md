@@ -11,6 +11,8 @@ contour question and takes it from there.
 2. If you cloned instead of templating, drop the history you don't
    want to keep: `rm -rf .git && git init`.
 
+   #### Already have an empty git-initialized folder?
+
    If your project folder already exists — empty, with `git init`
    already run in it — this step doesn't apply as written: clone the
    template into a temporary folder (or a subfolder) instead of
@@ -54,6 +56,22 @@ contour question and takes it from there.
    journal lines as append-only, so a placeholder that slips into a
    commit stops being an easy hand-edit.
 5. Continue to Onboarding, below.
+
+## A note on your first commit
+
+Your very first commit of the installed template touches mechanism
+paths — `CLAUDE.md`, `.claude/agents/`, `PROCESS/`, etc. — since it's
+installing them for the first time. Once `core.hooksPath` points at
+`.githooks`, the commit-msg hook (`tools/mechanism_gate.py`) will stop
+that commit and ask for either an axis-verdict block (one "axis N:
+<verdict>" line per axis of `docs/SIBLING_MAP.md`) or an explicit skip
+line in the commit message. Don't guess the format — the gate prints
+its own requirement when it rejects the commit, and `docs/
+SIBLING_MAP.md` lists the current axes. For an install commit, the
+skip line is the appropriate route (you're installing shipped files
+as-is, not changing a mechanism): use the exact phrase the gate
+recognizes, `axes: not a mechanism (<reason>)`, filling in your own
+`<reason>` (e.g. "installing the template's own shipped files").
 
 ## Onboarding
 

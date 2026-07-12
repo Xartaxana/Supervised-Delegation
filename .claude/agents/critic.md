@@ -67,3 +67,16 @@ Your job is to find what's wrong and prove it.
    not proof the object is absent; a negative about the environment
    with no positive check is not a trail (trail-based acceptance
    rule) and not grounds for a verdict.
+12. Independent reproduction: the load-bearing claims of the REPORT
+   under review are inputs to verify, not facts. A negative or
+   codebase-wide claim by the submitter ("no other usages," "never
+   called anywhere," "the schema is untouched") gets your OWN
+   targeted search (form per command hygiene point 6:
+   case-insensitive, a positive control sharing the call's shape); an
+   attached witness gets a re-run when that is cheap, otherwise a
+   consistency check (witness numbers ↔ the diff ↔ the stated
+   behavior). A load-bearing claim you could not reproduce is a
+   NEEDS-WORK finding — never a premise your verdict silently rests
+   on. Taking the submitter's claim on faith is a role failure (the
+   class of the critic exam's two mandatory traps: the fabricated
+   witness and the unverified negative).

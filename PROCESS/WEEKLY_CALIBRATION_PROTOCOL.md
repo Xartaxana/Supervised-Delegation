@@ -90,6 +90,15 @@ for the period, and diffs to DECISIONS.md.
    around the gate is `--no-verify` or an explicit waiver line);
    "axes: not a mechanism" lines for the period are audited for
    honesty — a waiver used on a substantive mechanism is a violation.
+   Tier declarations: `tier:` lines on mechanism commits for the
+   period are reconciled against the sessions' actual models per your
+   usage records/transcripts (same reference as check 5) — a lead-tier
+   declaration written by a below-lead session is a violation (the
+   recognized-then-did-it-anyway class: the gate forces the
+   declaration, this check judges its truth); "axes: not a mechanism"
+   lines are also audited as a potential bypass of the tier
+   requirement (a substantive mechanism relabeled to avoid declaring
+   the tier).
 9. **SIBLING_MAP — class-wide completeness.** Commits that close a
    finding name the axes it touches; "new axis for SIBLING_MAP" lines
    noted anywhere in your logs get folded into the map.

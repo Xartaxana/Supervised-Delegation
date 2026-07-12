@@ -36,6 +36,25 @@ without git):
    directories (tools/, gateway/) are deliberately outside the net --
    false positives there train toward --no-verify (same tradeoff as
    the source deployment's D-0055).
+7. Tier declaration (ported from the source deployment's D-0072,
+   mechanism 5): on the "mechanism" branch (axis block already
+   satisfied), the commit message must carry a SEPARATE line
+   "tier: <value>" -- a self-declaration of the committer's actual
+   tier, the same pattern as `dispatch_skipped`. Expected value: the
+   model bound to roles.lead in this template's own
+   delegation.config.yaml, resolved relative to REPO (this template's
+   install root, next to this gate) -- not the caller's cwd. No file,
+   or no roles.lead key -> default to the "fable" family (the
+   subscription-contour default for Lead). A declaration is accepted
+   on an exact match with the bound model, OR by containing its tier
+   family (fable/opus/sonnet/haiku, matched as a substring) -- a
+   non-Claude binding has no family, so only an exact model-id match
+   qualifies for it. The skip branch ("not a mechanism") and merge
+   commits do not require a tier line (same exemption net as the axis
+   block). The gate does NOT verify the declaration is true --
+   two-layer enforcement: code guarantees the line's presence and
+   shape, truth is judged by calibration against transcripts, a tier
+   above.
 """
 from __future__ import annotations
 
@@ -44,11 +63,18 @@ import subprocess
 import sys
 from pathlib import Path
 
+import yaml
+
 REPO = Path(__file__).resolve().parents[1]
 MAP_PATH = REPO / "docs" / "SIBLING_MAP.md"
 # Template dependency (toolkit transfer): this template has ONE decisions
 # file, DECISIONS.md -- not the source deployment's docs/DECISIONS_FULL.md.
 DECISIONS_FULL = "DECISIONS.md"
+# This template's install root, next to this gate -- not the caller's cwd.
+CONFIG_PATH = REPO / "delegation.config.yaml"
+
+LEAD_FAMILIES = ("fable", "opus", "sonnet", "haiku")
+TIER_LINE_RE = re.compile(r"^\s*tier\s*:\s*(\S.*?)\s*$", re.IGNORECASE | re.MULTILINE)
 
 MECHANISM_PREFIXES = (
     "CLAUDE.md",
@@ -102,6 +128,62 @@ def find_missing(text: str, axes: list[int]) -> list[int]:
             if not re.search(rf"axis\s+{n}\s*:", text, re.IGNORECASE)]
 
 
+def resolve_lead_binding(config_text: str | None) -> str:
+    """The model bound to roles.lead in delegation.config.yaml. No file,
+    no roles.lead key, or unparsable YAML -> default to the "fable"
+    family (the subscription-contour default for Lead) -- a
+    conservative (fail-closed) choice: it requires an explicit
+    declaration from anyone below the top tier. The declaration itself
+    is NOT checked for truth here (see tier_declared_ok) -- two-layer
+    enforcement: code guarantees the shape, calibration against
+    transcripts judges the truth, a tier above."""
+    if not config_text:
+        return "fable"
+    try:
+        data = yaml.safe_load(config_text) or {}
+    except yaml.YAMLError:
+        return "fable"
+    lead = (data.get("roles") or {}).get("lead") or {}
+    model = ((lead.get("subscription") or {}).get("model")
+             or (lead.get("api") or {}).get("model"))
+    return model or "fable"
+
+
+def lead_family(binding: str) -> str | None:
+    """The bound model's tier family by substring (fable/opus/sonnet/
+    haiku); None -- no family recognized (a non-Claude binding), in
+    which case only an exact model-id match qualifies."""
+    low = binding.lower()
+    for fam in LEAD_FAMILIES:
+        if fam in low:
+            return fam
+    return None
+
+
+def find_tier_declaration(msg: str) -> str | None:
+    """The value of the "tier: <value>" line -- from the commit MESSAGE
+    only (not the diff), the same self-declarative pattern as the skip
+    line."""
+    m = TIER_LINE_RE.search(msg)
+    return m.group(1).strip() if m else None
+
+
+def tier_declared_ok(declared: str, binding: str) -> bool:
+    if declared == binding:
+        return True
+    fam = lead_family(binding)
+    if fam is None:
+        return False
+    return fam in declared.lower()
+
+
+def _tier_queue_note() -> str:
+    return ("a mechanism commit is Lead-tier work: a session below the "
+            "lead binding's tier does NOT commit the mechanism itself -- "
+            "it goes into the Lead queue in CURRENT_CONTEXT.md; a "
+            "lead-tier session adds the line \"tier: <its own model>\".")
+
+
 def decide(msg: str, block_extra: str, staged: list[str],
            map_text: str | None, merging: bool = False) -> tuple[int, str]:
     """Pure gate decision. block_extra -- the diff of DECISIONS.md."""
@@ -132,6 +214,34 @@ def decide(msg: str, block_extra: str, staged: list[str],
     return 0, ""
 
 
+def decide_full(msg: str, block_extra: str, staged: list[str],
+                 map_text: str | None, config_text: str | None,
+                 merging: bool = False) -> tuple[int, str]:
+    """decide() plus the tier-declaration requirement (rule 7): a
+    "tier: <value>" line on the "mechanism" branch (axis block already
+    satisfied, not skip, not merge). config_text -- the text of
+    delegation.config.yaml (or None if the file is absent), the same
+    pattern as map_text."""
+    code, reason = decide(msg, block_extra, staged, map_text, merging)
+    if code:
+        return code, reason
+    hits = mechanism_paths(staged)
+    if not hits or merging or SKIP_RE.search(msg):
+        return 0, ""
+    binding = resolve_lead_binding(config_text)
+    declared = find_tier_declaration(msg)
+    if declared is None:
+        return 1, ("commit touches mechanism files:\n  " + "\n  ".join(hits)
+                    + "\nNo \"tier: <value>\" line (lead binding: "
+                    + binding + ") -- " + _tier_queue_note())
+    if not tier_declared_ok(declared, binding):
+        return 1, ("commit touches mechanism files:\n  " + "\n  ".join(hits)
+                    + "\nNot lead tier: \"tier: " + declared
+                    + "\" does not match the binding (" + binding
+                    + ") -- " + _tier_queue_note())
+    return 0, ""
+
+
 def _git(*args: str) -> str:
     proc = subprocess.run(["git", *args], capture_output=True, text=True,
                           encoding="utf-8", errors="replace")
@@ -150,7 +260,10 @@ def main(argv: list[str] | None = None) -> int:
     block_extra = _git("diff", "--cached", "--", DECISIONS_FULL)
     map_text = (MAP_PATH.read_text(encoding="utf-8", errors="replace")
                 if MAP_PATH.exists() else None)
-    code, reason = decide(msg, block_extra, staged, map_text, merging)
+    config_text = (CONFIG_PATH.read_text(encoding="utf-8", errors="replace")
+                   if CONFIG_PATH.exists() else None)
+    code, reason = decide_full(msg, block_extra, staged, map_text,
+                               config_text, merging)
     if code:
         print("mechanism_gate: " + reason, file=sys.stderr)
     return code
