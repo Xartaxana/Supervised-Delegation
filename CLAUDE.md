@@ -148,7 +148,12 @@ separately in this deployment).
    in the decision text (DECISIONS.md); a non-mechanism edit to the
    same files is legitimate only with an explicit line in the COMMIT
    MESSAGE: "axes: not a mechanism (<reason>)" — the same pattern as
-   `dispatch_skipped`. Recognition (mechanism-recognition rule): a
+   `dispatch_skipped`. A mechanism commit additionally declares its
+   tier as a separate "tier: <model>" line in the commit message
+   (tier-declaration rule): the gate rejects a declaration below the
+   deployment's lead binding (delegation.config.yaml) with a
+   queue-to-Lead instruction; calibration reconciles the declarations
+   against transcripts. Recognition (mechanism-recognition rule): a
    mechanism is any change that adds or alters a duty for future
    sessions/workers, or a machine check (a rule, a role, a log
    event/field, a schema, a gate, a check, a worker profile, a

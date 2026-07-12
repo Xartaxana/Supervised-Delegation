@@ -1,9 +1,5 @@
 # Supervised Delegation
 
-**PRE-RELEASE.** This template is awaiting its two validation installs
-(a fresh project and an existing one) before the pre-release banner
-comes off. Expect rough edges.
-
 Supervised Delegation is policy-driven supervised delegation across
 model tiers: the policy IS the router. A written routing policy
 (CLAUDE.md) sends each piece of work to the right tier — recon,
