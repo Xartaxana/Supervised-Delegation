@@ -544,6 +544,283 @@ def test_backfill_fills_agent_fields_and_null_costs_idempotently(tmp_path, db_fi
     assert updated_again == 0
 
 
+# ---- deep subagent transcripts under workflows/ (regression) ----
+#
+# A workflow tool can write agent transcripts at a THIRD depth, still
+# under .../subagents/ but nested further:
+# <project>/<session>/subagents/workflows/wf_*/agent-*.jsonl. The
+# Task 6 glob/detection (one directory deep only) silently missed
+# these. Regression coverage below builds a tmp tree with all three
+# layouts together (top-level session, flat subagent, deep workflow
+# subagent) and confirms every one is counted.
+
+def test_project_attribution_deep_workflow_subagent_layout(tmp_path):
+    path = (
+        tmp_path / "myproj" / "session-1" / "subagents" / "workflows"
+        / "wf_abc123" / "agent-deep1.jsonl"
+    )
+    _write_jsonl(path, [_assistant_line(session_id="session-1", is_sidechain=True)])
+    turns = list(iter_assistant_turns(str(path)))
+    assert len(turns) == 1
+    # Must attribute to the real project/session two levels above the
+    # "subagents" ancestor, NOT "wf_abc123", "workflows", or
+    # "subagents" itself.
+    assert turns[0]["project"] == "myproj"
+    assert turns[0]["session_id"] == "session-1"
+    assert turns[0]["is_sidechain"] == 1
+
+
+def test_deep_workflow_subagent_session_id_fallback_uses_directory_not_agent_filename(tmp_path):
+    # No "sessionId" JSON field -- fallback must still resolve to the
+    # session directory one level above "subagents/", regardless of
+    # how many extra directories (workflows/wf_x/...) sit in between.
+    path = (
+        tmp_path / "myproj2" / "sess-xyz" / "subagents" / "workflows"
+        / "wf_def456" / "agent-deep2.jsonl"
+    )
+    _write_jsonl(path, [_assistant_line(session_id=None, is_sidechain=True)])
+    turns = list(iter_assistant_turns(str(path)))
+    assert len(turns) == 1
+    assert turns[0]["session_id"] == "sess-xyz"
+    assert turns[0]["project"] == "myproj2"
+
+
+def test_transcript_glob_recursive_pattern_covers_deep_workflow_files(tmp_path, db_file):
+    # PIN: on the pre-fix code (glob pattern "subagents/*.jsonl", one
+    # directory deep only), this test fails -- the deep workflow file
+    # is invisible to both the glob and iter_assistant_turns's
+    # "immediate parent == subagents" check. All three real-world
+    # layouts, together:
+    top_level = tmp_path / "projA" / "session-1.jsonl"
+    _write_jsonl(top_level, [
+        _assistant_line(session_id="session-1", request_id="req-top-1"),
+    ])
+    flat_sub = tmp_path / "projA" / "session-1" / "subagents" / "agent-flat1.jsonl"
+    _write_jsonl(flat_sub, [
+        _assistant_line(session_id="session-1", request_id="req-flat-1", is_sidechain=True),
+    ])
+    deep_sub = (
+        tmp_path / "projA" / "session-1" / "subagents" / "workflows"
+        / "wf_xyz789" / "agent-deep1.jsonl"
+    )
+    _write_jsonl(deep_sub, [
+        _assistant_line(session_id="session-1", request_id="req-deep-1", is_sidechain=True),
+    ])
+    # A workflow journal.jsonl sitting right next to the deep agent
+    # file, real-shape lines (type: "started"/"result", no
+    # message.usage) -- must stay inert, matched by the wider glob but
+    # contributing zero rows, not an error.
+    journal = deep_sub.parent / "journal.jsonl"
+    _write_jsonl(journal, [
+        {"type": "started", "key": "v2:abc", "agentId": "agent-deep1"},
+        {"type": "result", "key": "v2:abc", "agentId": "agent-deep1", "result": {"summary": "ok"}},
+    ])
+
+    patterns = transcript_glob(base_dir=tmp_path)
+    rows_imported, sessions_seen, warnings = import_transcripts(patterns, db_file)
+
+    # 3 real assistant turns (top-level + flat subagent + deep
+    # workflow subagent); the journal.jsonl contributes 0.
+    assert rows_imported == 3
+    assert sessions_seen == {"session-1"}
+
+    conn = sqlite3.connect(db_file)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("SELECT * FROM cc_usage ORDER BY dedupe_key").fetchall()
+    assert len(rows) == 3
+    for r in rows:
+        assert r["project"] == "projA"
+        assert r["session_id"] == "session-1"
+    request_ids_seen = {r["dedupe_key"].split(":", 1)[1] for r in rows}
+    assert request_ids_seen == {"req-top-1", "req-flat-1", "req-deep-1"}
+
+
+def test_import_transcripts_deep_workflow_layout_is_idempotent(tmp_path, db_file):
+    deep_sub = (
+        tmp_path / "projD" / "session-4" / "subagents" / "workflows"
+        / "wf_qqq" / "agent-deep-idem.jsonl"
+    )
+    _write_jsonl(deep_sub, [
+        _assistant_line(session_id="session-4", request_id="req-deep-idem", is_sidechain=True),
+    ])
+    patterns = transcript_glob(base_dir=tmp_path)
+
+    rows1, _, _ = import_transcripts(patterns, db_file)
+    rows2, _, _ = import_transcripts(patterns, db_file)
+
+    assert rows1 == 1
+    assert rows2 == 0
+
+    conn = sqlite3.connect(db_file)
+    count = conn.execute("SELECT COUNT(*) FROM cc_usage").fetchone()[0]
+    assert count == 1
+
+
+# ---- max-output-tokens dedup (regression) ----
+#
+# A split subagent turn's lines share input/cache tokens but carry a
+# placeholder output_tokens (2-7) on every line except the one that
+# carries the real value. Deduping by FIRST occurrence (INSERT OR
+# IGNORE) keeps the placeholder. Tie-breaking on LAST occurrence
+# instead is also wrong -- it depends on `sorted(paths)`/line order,
+# which is wrong for the cross-file collision case covered further
+# below (test_max_wins_for_cross_file_dedupe_key_collision) --
+# occurrence order there is an artifact of glob/filename sort,
+# unrelated to which file holds the real value. The fix ties-break on
+# VALUE instead: output_tokens/accounted_cost_usd is only overwritten
+# when the new line's output_tokens is STRICTLY GREATER than what is
+# stored (MAX-wins), which is order-independent by construction. These
+# tests build the split-turn shape directly (not via `_assistant_line`,
+# which hardcodes output_tokens=5 for every line) and PIN the fix.
+
+def _split_turn_lines(session_id, request_id, outputs, model="claude-sonnet-5",
+                       is_sidechain=True, agent_id="agent-e1-id",
+                       attribution_agent="builder"):
+    lines = []
+    for i, out in enumerate(outputs):
+        obj = {
+            "type": "assistant",
+            "uuid": f"uuid-{request_id}-{i}",
+            "requestId": request_id,
+            "sessionId": session_id,
+            "isSidechain": is_sidechain,
+            "timestamp": "2026-07-14T00:00:00.000Z",
+            "parentUuid": None,
+            "message": {
+                "id": f"msg_{request_id}_{i}",
+                "model": model,
+                "role": "assistant",
+                "usage": {
+                    "input_tokens": 100, "output_tokens": out,
+                    "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+                },
+                "content": [{"type": "text", "text": "synthetic fixture text"}],
+            },
+        }
+        if is_sidechain:
+            obj["agentId"] = agent_id
+            obj["attributionAgent"] = attribution_agent
+        lines.append(obj)
+    return lines
+
+
+def test_max_wins_for_split_turn_output_tokens(tmp_path, db_file):
+    # PIN: on the pre-fix code (INSERT OR IGNORE, first line wins),
+    # this test fails -- the stored output_tokens is 5 (the first
+    # line's placeholder), not 383 (the real value, only on the last
+    # line). It also passes under a last-wins fix, since here the real
+    # value happens to be last -- see
+    # test_max_wins_for_cross_file_dedupe_key_collision below for the
+    # case that distinguishes max-wins from last-wins.
+    sub = tmp_path / "projE" / "session-5" / "subagents" / "agent-e1.jsonl"
+    _write_jsonl(sub, _split_turn_lines("session-5", "req-split-1", [5, 5, 5, 383]))
+
+    rows_imported, _, _ = import_transcripts(str(sub), db_file)
+    assert rows_imported == 1  # one distinct API turn (one dedupe_key)
+
+    conn = sqlite3.connect(db_file)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT * FROM cc_usage WHERE dedupe_key = 'session-5:req-split-1'"
+    ).fetchone()
+    assert row is not None
+    assert row["output_tokens"] == 383
+    assert row["input_tokens"] == 100  # unaffected -- identical across all 4 lines
+    input_price, output_price = PRICES_PER_TOKEN_USD["claude-sonnet-5"]
+    assert row["accounted_cost_usd"] == pytest.approx(100 * input_price + 383 * output_price)
+
+
+def test_max_wins_survives_reimport_and_stays_idempotent(tmp_path, db_file):
+    # Re-running the importer over the SAME split-turn file must keep
+    # the corrected value (not regress it back to a placeholder
+    # mid-way through the re-scan) and must not inflate rows_imported
+    # once the row is already correct. Under max-wins this also covers
+    # the case where the re-scan re-presents an EQUAL (not smaller)
+    # value -- output_tokens must stay at 383, not merely "not regress
+    # to something smaller".
+    sub = tmp_path / "projF" / "session-6" / "subagents" / "agent-f1.jsonl"
+    _write_jsonl(sub, _split_turn_lines("session-6", "req-split-2", [3, 383]))
+
+    rows1, _, _ = import_transcripts(str(sub), db_file)
+    rows2, _, _ = import_transcripts(str(sub), db_file)
+
+    assert rows1 == 1
+    assert rows2 == 0  # nothing NEW on the second run
+
+    conn = sqlite3.connect(db_file)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT * FROM cc_usage WHERE dedupe_key = 'session-6:req-split-2'"
+    ).fetchone()
+    assert row["output_tokens"] == 383
+    count = conn.execute("SELECT COUNT(*) FROM cc_usage").fetchone()[0]
+    assert count == 1  # still exactly one row, no duplicate
+
+
+def test_max_wins_does_not_break_main_chain_identical_duplicates(tmp_path, db_file):
+    # Main-chain duplicate lines are byte-identical (first == last) --
+    # confirm the max-wins fix is a genuine no-op in value for that
+    # already-correct case (equal values are never "strictly greater",
+    # so the conditional UPDATE never fires).
+    top_level = tmp_path / "projG" / "session-7.jsonl"
+    _write_jsonl(top_level, _split_turn_lines(
+        "session-7", "req-main-dup", [50, 50], is_sidechain=False,
+    ))
+
+    rows_imported, _, _ = import_transcripts(str(top_level), db_file)
+    assert rows_imported == 1
+
+    conn = sqlite3.connect(db_file)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT * FROM cc_usage WHERE dedupe_key = 'session-7:req-main-dup'"
+    ).fetchone()
+    assert row["output_tokens"] == 50
+
+
+def test_max_wins_for_cross_file_dedupe_key_collision(tmp_path, db_file):
+    # PIN: the same dedupe_key can appear in TWO DIFFERENT sibling
+    # subagent files under one session's subagents/ directory, not
+    # just on two lines of one file. This test builds a neutral
+    # fixture reproducing that shape: a file that sorts FIRST carries
+    # the real output_tokens; a file that sorts LATER carries only a
+    # placeholder line for the SAME requestId.
+    #
+    # On a last-occurrence-wins fix, this test FAILS:
+    # import_transcripts() processes files in sorted(paths) order, so
+    # the later-sorting placeholder file overwrites the earlier-
+    # sorting real value, leaving output_tokens == 3, not 3772.
+    # Max-wins (the actual fix) is order-independent and keeps 3772
+    # regardless of which file the glob visits first.
+    session_id = "session-collision-1"
+    request_id = "req-collision-1"
+    real_file = tmp_path / "projH" / session_id / "subagents" / "agent-a-real.jsonl"
+    placeholder_file = tmp_path / "projH" / session_id / "subagents" / "agent-b-placeholder.jsonl"
+    assert str(real_file) < str(placeholder_file)  # sanity: matches the intended sort order
+
+    _write_jsonl(real_file, _split_turn_lines(
+        session_id, request_id, [3772], agent_id="agent-a-real", attribution_agent="worker-a",
+    ))
+    _write_jsonl(placeholder_file, _split_turn_lines(
+        session_id, request_id, [3], agent_id="agent-b-placeholder", attribution_agent="worker-b",
+    ))
+
+    patterns = str(tmp_path / "*" / "*" / "subagents" / "*.jsonl")
+    rows_imported, _, _ = import_transcripts(patterns, db_file)
+    assert rows_imported == 1  # one distinct dedupe_key across the two files
+
+    conn = sqlite3.connect(db_file)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT * FROM cc_usage WHERE dedupe_key = ?",
+        (f"{session_id}:{request_id}",),
+    ).fetchone()
+    assert row is not None
+    assert row["output_tokens"] == 3772
+    input_price, output_price = PRICES_PER_TOKEN_USD["claude-sonnet-5"]
+    assert row["accounted_cost_usd"] == pytest.approx(100 * input_price + 3772 * output_price)
+
+
 def test_import_transcripts_accepts_single_string_pattern_backward_compat(tmp_path, db_file):
     # The pre-Task-6 API (single glob string) must keep working, since
     # both the CLI --transcripts-glob override and any external caller

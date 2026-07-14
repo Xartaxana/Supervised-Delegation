@@ -220,7 +220,7 @@ def test_unparsable_line_reported(tmp_path):
 # ---------------------------------------------------------------------
 # 9. the spaced-JSON format (spaces after colons)
 # ---------------------------------------------------------------------
-def test_ao3_format_with_spaces_parses(tmp_path):
+def test_external_journal_format_with_spaces_parses(tmp_path):
     p = tmp_path / "j.jsonl"
     raw = ('{"ts": "2026-07-08T00:00:00", "event": "delegated", "agent": "builder", '
            '"category": "implementation", "notes": "n", "task_id": "at-bug-001"}')
@@ -252,18 +252,23 @@ def test_window_filter_excludes_outside_events(tmp_path):
 
 
 # ---------------------------------------------------------------------
-# 11. legacy section, pre-typed-fields-schema
+# 11. legacy section, pre-typed-fields-schema (migration installs only:
+# a fresh install keeps both cutovers at the epoch, so the legacy branch
+# is exercised here by patching the cutoff the way a migrating
+# deployment would set it)
 # ---------------------------------------------------------------------
-def test_legacy_events_before_d0053_not_counted_as_violation(tmp_path):
+def test_legacy_events_before_cutoff_not_counted_as_violation(tmp_path, monkeypatch):
+    import calibration_counts as cc
+    monkeypatch.setattr(cc, "LEGACY_CUTOFF", "2026-07-08T20:00:00")
     p = tmp_path / "j.jsonl"
     write_journal(p, [
-        # before LEGACY_CUTOFF (2026-07-08T20:00:00), rejected with no
+        # before the (patched) LEGACY_CUTOFF, rejected with no
         # failure_class -- legacy
         ev("2026-07-08T10:00:00", "delegated", agent="builder", model="sonnet",
            task_id="t-001", category="implementation", notes="n"),
         ev("2026-07-08T10:10:00", "rejected", agent="builder", model="sonnet",
            task_id="t-001", attempt=1, category="implementation", notes="n"),
-        # after LEGACY_CUTOFF, the same defect -- a real violation
+        # after the cutoff, the same defect -- a real violation
         ev("2026-07-09T10:00:00", "delegated", agent="builder", model="sonnet",
            task_id="t-002", category="implementation", notes="n"),
         ev("2026-07-09T10:10:00", "rejected", agent="builder", model="sonnet",

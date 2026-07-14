@@ -1,4 +1,4 @@
-"""Tests for tools/pi_run_guard.py (t-017, F-14 zero-tool-call guard).
+"""Tests for tools/pi_run_guard.py (the zero-tool-call fabrication guard).
 
 No network, no litellm/pi imports -- pure parsing/SQL over small
 synthetic fixtures. The --mode json event/message shapes used below
@@ -43,7 +43,7 @@ def test_parse_json_events_skips_blank_and_invalid_lines(tmp_path):
 
 
 def test_analyze_json_events_zero_tool_calls_fabrication_shape():
-    # Shape of t-011/t-016: agent_start/turn_start/message_end/agent_end,
+    # Shape of a real fabrication incident: agent_start/turn_start/message_end/agent_end,
     # no tool_execution_* events at all, substantive final text.
     events = [
         {"type": "agent_start"},
@@ -142,7 +142,7 @@ def _row(id, ts, status="success", response="", error=None, prompt="[]"):
 
 
 def test_analyze_db_rows_zero_tool_calls_fabrication_shape():
-    # Mirrors gateway/requests.db ids 249-255/257 (t-016 retro window,
+    # Mirrors a real gateway/requests.db retro window (ids 249-255/257,
     # minus the id-256 probe): repeated empty-response attempts then one
     # substantive, zero-tool-call final answer.
     rows = [

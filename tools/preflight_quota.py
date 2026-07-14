@@ -1,28 +1,29 @@
 """Measured GO/NO-GO preflight check for a sliding-window token quota
-(t-027, F-30 layer 1: "code on irreversible paths" -- a quota-bound run
-must no longer be launched on a guess; this script forces a measured
-number in front of the launch decision).
+("code on irreversible paths" -- a quota-bound run must not be
+launched on a guess; this script forces a measured number in front of
+the launch decision).
 
-Reuses the same lesson as F-27 (t-015 rejected attempt 3, 2026-07-10):
-a provider's per-model quota is shared across every gateway alias that
-resolves to that provider model (e.g. judge-groq and builder-groq both
-sit on groq/openai/gpt-oss-120b -- their token burn adds up on Groq's
-side even though they are separate ledger lines here), AND across every
-gateway/*.db file, not just the primary requests.db (side DBs such as
-gateway/t013.db, written via GATEWAY_DB_PATH, carry real burn against
-the SAME provider quota and are invisible to a query scoped to one db).
+Lesson learned from a live incident where a run was rejected against
+a stale quota window: a provider's per-model quota is shared across
+every gateway alias that resolves to that provider model (e.g. two
+aliases bound to the same underlying model on the same provider have
+their token burn add up on the provider's side even though they are
+separate ledger lines here), AND across every gateway/*.db file, not
+just the primary requests.db (a side DB written via GATEWAY_DB_PATH
+carries real burn against the SAME provider quota and is invisible to
+a query scoped to one db).
 
 Grouping by "provider_model" (spec's own term) empirically means
 something narrower than gateway/config.yaml's litellm_params.model
 string: the value LiteLLM's callback actually logs into requests.db's
 provider_model column has its provider prefix (the part before the
 first "/", e.g. "groq", "gemini", "anthropic", "ollama_chat") stripped
-off. Verified against live gateway/requests.db and gateway/t013.db
-(2026-07-10): litellm_params.model "groq/openai/gpt-oss-120b" is
-logged as provider_model "openai/gpt-oss-120b"; "groq/llama-3.3-70b-
-versatile" as "llama-3.3-70b-versatile"; "gemini/gemini-3.5-flash" as
-"gemini-3.5-flash"; "anthropic/claude-fable-5" (the "mock" alias) as
-"claude-fable-5". This is a real spec/reality discrepancy from the
+off. Verified against a live gateway db: litellm_params.model
+"groq/openai/gpt-oss-120b" is logged as provider_model
+"openai/gpt-oss-120b"; "groq/llama-3.3-70b-versatile" as
+"llama-3.3-70b-versatile"; "gemini/gemini-3.5-flash" as
+"gemini-3.5-flash"; "anthropic/claude-3-5-sonnet" (the "mock" alias)
+as "claude-3-5-sonnet". This is a real spec/reality discrepancy from the
 spec text's "provider_model matches the provider_model of the given
 --alias" reading of litellm_params.model verbatim -- normalize_provider_model()
 below is the fix (strip the first path segment before comparing).
@@ -38,18 +39,20 @@ datetime.datetime in Python before any window comparison, which is
 Rule #1-safe (query a superset, then filter precisely in Python) at
 the row counts this project's databases actually have.
 
-KNOWN LIMIT (critic t-027, N1/N2): the DB's provider_model column has
-already lost the provider prefix at logging time, so this tool cannot
-tell two different providers serving an identically-named model apart
-(a hypothetical together/llama-3.3-70b would merge with Groq's into
-one quota group -- wrong, quotas are per provider). Same mechanics
-today merge aliases intern+analyst (both qwen3:4b tails) and lead+mock
-(both claude-fable-5) -- harmless now (no quota walls on those), but
+KNOWN LIMIT (a documented review finding): the DB's provider_model
+column has already lost the provider prefix at logging time, so this
+tool cannot tell two different providers serving an identically-named
+model apart (a hypothetical together/llama-3.3-70b would merge with
+Groq's into one quota group -- wrong, quotas are per provider). Same
+mechanics would merge any two aliases that happen to share an
+underlying model tail (e.g. two roles both bound to the same local
+model, or a role and the smoke-test "mock" alias bound to the same
+provider model) -- harmless when neither side has a quota wall, but
 check this note before adding a second provider for an existing model
 tail. The data to fix it does not exist in the DB; fixing it means
 logging the provider (sqlite_logger) first.
 
-t-031 FIXES (critic t-027 review, N3/N5):
+FOLLOW-UP FIXES (from a documented review, findings N3/N5):
 - N3: go_at/release_schedule used to be computed from the local SQLite
   sum alone even when --probe found the provider's own Used number
   higher (verdict already trusted the provider number; the horizon did
@@ -60,21 +63,22 @@ t-031 FIXES (critic t-027 review, N3/N5):
   probe-time, so it is assumed to age out only at probe-time+window --
   the last possible moment). An explicit RECONCILIATION line (provider
   Used, local sum, delta) is always printed alongside a probe 429 with
-  delta > 0 (OpenClaw p.2 / F-27: reconcile the ledger against the
-  provider's own answer, don't just silently act on it).
+  delta > 0 (reconcile the ledger against the provider's own answer,
+  don't just silently act on it).
 - N5: usage_in_window() used to let a locked gateway/*.db
   (sqlite3.OperationalError: "database is locked") propagate as a bare
   traceback. It now raises QuotaDatabaseLockedError (naming the locked
   db); main() catches it, prints one clear line, and exits 2 -- loud
   failure, not a silently understated quota number. Sibling fix found
-  while testing this (same class, not in the spec's own line range):
-  discover_dbs()'s schema-probe query hits the identical lock error and
-  had the SAME silent-swallow bug in its bare 'except sqlite3.Error:
-  continue' -- verified empirically that even a bare schema read blocks
-  under another connection's BEGIN EXCLUSIVE, which would have dropped
-  a locked db from the discovered list before usage_in_window's guard
-  ever saw it. Both sites now re-raise specifically on "locked" and
-  leave other sqlite3.Error types silently skipped, unchanged.
+  while testing this (same class, not in the original finding's own
+  line range): discover_dbs()'s schema-probe query hits the identical
+  lock error and had the SAME silent-swallow bug in its bare 'except
+  sqlite3.Error: continue' -- verified empirically that even a bare
+  schema read blocks under another connection's BEGIN EXCLUSIVE, which
+  would have dropped a locked db from the discovered list before
+  usage_in_window's guard ever saw it. Both sites now re-raise
+  specifically on "locked" and leave other sqlite3.Error types
+  silently skipped, unchanged.
 """
 
 import argparse
@@ -94,9 +98,9 @@ DEFAULT_WINDOW_SECONDS = 86400
 
 class QuotaDatabaseLockedError(RuntimeError):
     """Raised by usage_in_window() when a gateway/*.db file is locked
-    (sqlite3.OperationalError: 'database is locked') -- N5 (critic
-    t-027, preflight_quota.py:166-174 in that review's line numbers):
-    a locked db must fail LOUD (CLI exit 2, one clear line naming the
+    (sqlite3.OperationalError: 'database is locked') -- N5 (a
+    documented review finding): a locked db must fail LOUD (CLI exit
+    2, one clear line naming the
     db) rather than have the caller's uncaught traceback stand in for
     an error message, and rather than silently dropping that db's
     usage out of the sum -- a quiet drop would understate real quota
@@ -330,12 +334,13 @@ def release_schedule(rows: list, limit: int, window_seconds: int, need: int,
 # not swallow the sentence-ending period that follows it in the
 # provider's message:
 #   short TPM wait: "...Limit 12000, Used 11862, Requested 1758. Please
-#     try again in 3.1s. Need more tokens? ..." (verbatim, gateway/
-#     requests.db, middle-groq, 2026-07-09)
+#     try again in 3.1s. Need more tokens? ..." (verbatim, captured from
+#     a live gateway db on a groq-bound alias)
 #   long TPD wait: "...Limit 100000, Used 90614, Requested 17053, try
-#     again in 1h50m" (t-015 rejected-attempt-3 notes, 2026-07-10 --
-#     paraphrased there, but the Limit/Used/Requested field names and
-#     order match the verbatim example above)
+#     again in 1h50m" (notes from a live incident where a run was
+#     rejected against a stale quota window -- paraphrased there, but
+#     the Limit/Used/Requested field names and order match the
+#     verbatim example above)
 _LIMIT_RE = re.compile(r"\bLimit\s+(\d+)")
 _USED_RE = re.compile(r"\bUsed\s+(\d+)")
 _REQUESTED_RE = re.compile(r"\bRequested\s+(\d+)")
@@ -345,14 +350,14 @@ _RETRY_RE = re.compile(r"try again in\s+((?:\d+h)?(?:\d+m)?\d+(?:\.\d+)?s)", re.
 def parse_provider_429(text: str):
     """Extracts the provider's own accounting from a Groq-style 429
     error body -- this is ground truth over our SQLite-summed usage
-    (F-27: side DBs / off-proxy traffic are invisible to us but not to
+    (side DBs / off-proxy traffic are invisible to us but not to
     the provider). Returns None if the text has neither Limit nor Used
     (not a recognizable quota-wall message).
 
-    Canonical verbatim example (gateway/requests.db, middle-groq /
-    llama-3.3-70b-versatile TPM wall, captured 2026-07-09):
+    Canonical verbatim example (captured from a live gateway db, a
+    groq-bound alias, llama-3.3-70b-versatile TPM wall):
         'Rate limit reached for model `llama-3.3-70b-versatile` in '
-        'organization `org_01kwkzk8sbeavb2cvwcvc367rw` service tier '
+        'organization `org_xxxxxxxxxxxxxxxxxxxxxxxx` service tier '
         '`on_demand` on tokens per minute (TPM): Limit 12000, Used '
         '11862, Requested 1758. Please try again in 3.1s. Need more '
         'tokens? Upgrade to Dev Tier today at '

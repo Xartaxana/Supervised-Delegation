@@ -42,6 +42,24 @@ def categorize(prompt_text: str) -> str:
     return "other"
 
 
+# Categories from CATEGORY_RULES/categorize() (and the stored `category`
+# column) that DELEGATION_TABLE.md's four-state status vocabulary (D-0035)
+# currently marks provisionally_validated or production_validated -- i.e.
+# have a delegate whose suitability has actually been checked, as opposed
+# to "estimated" (not yet checked) or "rejected" (checked and found
+# harmful). Used by R2 readiness (ROADMAP.md "Money on the table"). No
+# machine link to DELEGATION_TABLE.md; the drift detector is REGISTERED
+# (rule 10(c)): a calibration check diffs this frozenset against the
+# table's provisionally/production_validated rows -- statuses move ONLY
+# at calibration (Update Rule 1), so any status move must update this set
+# in the same commit.
+#
+# Starts empty: populate as your deployment validates categories at
+# calibration (Update Rule 1); the calibration check mirrors this set
+# against the delegation table.
+VALIDATED_DELEGABLE_CATEGORIES = frozenset()
+
+
 def common_prefix_len(a: str, b: str) -> int:
     limit = min(len(a), len(b))
     i = 0
@@ -85,9 +103,9 @@ def repetition_by_model(rows) -> dict:
 # ROADMAP.md "Phase 2 -- Routing and Context Management Evaluation" gate
 # criteria: G1-G2 (common), R1-R5 (Router), C1-C3 (Context management).
 # Deterministic Python/SQL over requests.db (incl. its cc_usage table,
-# Delegated Task 5) and DELEGATION_TABLE.md only -- no LLM calls (spec
-# rule 1). Every entry is one of four vocabularies, never a guessed value
-# (spec rule 2/3, Rule #1 spirit):
+# Delegated Task 5) and docs/SHADOW_EVALUATION_LOG.md only -- no LLM calls
+# (spec rule 1). Every entry is one of four vocabularies, never a guessed
+# value (spec rule 2/3, Rule #1 spirit):
 #   status="met" | "not_met"          -> entry also carries "detail"
 #   status="not_computable_yet"       -> entry also carries "needs"
 #   status="manual_check"             -> entry also carries "pointer"
@@ -97,18 +115,33 @@ _SHADOW_EVAL_LINE_RE = re.compile(
     r"(\s*\[([^\]]+)\])?\s*$"
 )
 
+# Matches the section's own heading regardless of heading depth: the H1
+# "# Shadow Evaluation Log" atop docs/SHADOW_EVALUATION_LOG.md. No match ->
+# no section -> empty counts; see parse_shadow_eval_log's docstring for why
+# this is not a whole-text fallback.
+_SHADOW_EVAL_HEADER_RE = re.compile(
+    r"^#{1,6}\s*Shadow Evaluation Log\s*$", re.MULTILINE
+)
+
 
 def parse_shadow_eval_log(text: str) -> dict:
-    """Parses the Shadow Evaluation Log section of DELEGATION_TABLE.md into
-    per-category {"pairs": n_sum, "runs": line_count}, counting only JUDGED
-    pairs (R1's own wording): a line without "judge=" (the early difflib-
-    only evidence, 2026-07-03) is not judged evidence. [RETRACTED] lines are
-    excluded (contaminated sample, per DELEGATION_TABLE.md's own retraction
-    note); [OVERRULED, ...] lines are NOT excluded -- that pair WAS judged,
-    only the verdict was overridden by chief-judge review, which is still
-    judged-evidence volume for R1's purpose."""
-    idx = text.find("## Shadow Evaluation Log")
-    section = text[idx:] if idx != -1 else text
+    """Parses the Shadow Evaluation Log (docs/SHADOW_EVALUATION_LOG.md)
+    into per-category {"pairs": n_sum, "runs": line_count}, counting only
+    JUDGED pairs (R1's own wording): a line without "judge=" (early
+    difflib-only evidence) is not judged evidence. [RETRACTED] lines are
+    excluded (contaminated sample, per the log's own retraction note);
+    [OVERRULED, ...] lines are NOT excluded -- that pair WAS judged, only
+    the verdict was overridden by chief-judge review, which is still
+    judged-evidence volume for R1's purpose.
+
+    The heading must actually be found (_SHADOW_EVAL_HEADER_RE) before any
+    line is parsed -- no match means no section, and parsing stops with an
+    empty result. This is deliberate: a whole-text fallback when the
+    heading isn't found would be hidden fragility -- it would happen to
+    still work only as long as the log always carried the section
+    somewhere in it, masking a real "heading missing/renamed" case."""
+    match = _SHADOW_EVAL_HEADER_RE.search(text)
+    section = text[match.start():] if match else ""
     counts = defaultdict(lambda: {"pairs": 0, "runs": 0})
     for line in section.splitlines():
         m = _SHADOW_EVAL_LINE_RE.match(line)
@@ -249,19 +282,138 @@ def _c2_readiness(conn: sqlite3.Connection, days: int) -> dict:
     }
 
 
-def _r1_readiness(delegation_table_path) -> dict:
+def _r2_readiness(conn: sqlite3.Connection, days: int) -> dict:
+    """ROADMAP.md R2 ("Money on the table"): validated-delegable categories'
+    share of real-traffic spend, over the G1 window. Category attribution
+    prefers the stored `category` column (ground truth); NULL rows fall
+    back to categorize() the same way daily_digest's categories_heuristic
+    does.
+
+    RECORDED ASSUMPTION: the gate text says "share of the LEAD's accounted
+    spend"; this sums ALL real rows without a model filter. Today the two
+    are equivalent by construction -- real rows in requests.db are
+    coordinator-tier interactive traffic (subagents are accounted in
+    cc_usage, not here). If non-Lead 'real' traffic ever flows through the
+    gateway (e.g. a built Router), this denominator silently widens: add a
+    model filter then. The per-category spend printout keeps the mix
+    visible to the calibrating Lead."""
+    since = f"-{days} days"
+    rows = conn.execute(
+        "SELECT category, COALESCE(cost_usd, 0), prompt FROM requests"
+        " WHERE traffic_kind = 'real' AND substr(ts, 1, 10) >= date('now', ?)",
+        (since,),
+    ).fetchall()
+    if not rows:
+        return {
+            "status": "not_computable_yet",
+            "needs": (
+                f"categorized real traffic (0 traffic_kind='real' row(s)"
+                f" in the last {days} day(s))"
+            ),
+        }
+    cost_by_category = defaultdict(float)
+    total_cost = 0.0
+    for stored_category, cost, prompt in rows:
+        category = stored_category or categorize(prompt)
+        cost_by_category[category] += cost
+        total_cost += cost
+    if total_cost <= 0:
+        return {
+            "status": "not_computable_yet",
+            "needs": (
+                f"nonzero cost_usd on real rows to compute a spend share"
+                f" ({len(rows)} real row(s) in the last {days} day(s),"
+                " all zero-cost)"
+            ),
+        }
+    validated_cost = sum(
+        cost_by_category[c] for c in VALIDATED_DELEGABLE_CATEGORIES
+        if c in cost_by_category
+    )
+    ratio = validated_cost / total_cost
+    status = "met" if ratio >= 0.25 else "not_met"
+    breakdown = ", ".join(
+        f"{cat}=${cost_by_category[cat]:.4f}" for cat in sorted(cost_by_category)
+    )
+    validated_label = ", ".join(sorted(VALIDATED_DELEGABLE_CATEGORIES)) or "(none yet)"
+    return {
+        "status": status,
+        "detail": (
+            f"{ratio:.1%} of real-traffic spend (${total_cost:.4f} across"
+            f" {len(rows)} row(s)) falls in validated-delegable categories"
+            f" ({validated_label}, per DELEGATION_TABLE.md"
+            " provisionally_validated rows); per-category spend:"
+            f" {breakdown} vs threshold >=25%"
+        ),
+    }
+
+
+def _c3_readiness(conn: sqlite3.Connection, days: int) -> dict:
+    """ROADMAP.md C3: cache-aware truly-uncached share of real-traffic
+    input-side tokens. prompt_tokens is INCLUSIVE of the cache columns
+    (verified empirically): the truly-uncached paid portion of a row is
+    prompt_tokens minus BOTH cache columns, not prompt_tokens alone (the
+    old bug) and not prompt_tokens plus the cache columns (double-counts
+    the other way -- see daily_digest's cache_read_share comment for the
+    disjoint-columns cache-formula sibling in tools/usage_report.py, where
+    cc_usage input_tokens is disjoint from the cache counters instead of
+    inclusive of them; porting a formula across that pair must translate
+    field semantics, not just copy arithmetic)."""
+    since = f"-{days} days"
+    rows = conn.execute(
+        "SELECT COALESCE(prompt_tokens, 0), COALESCE(cache_read_input_tokens, 0),"
+        " COALESCE(cache_creation_input_tokens, 0) FROM requests"
+        " WHERE traffic_kind = 'real' AND substr(ts, 1, 10) >= date('now', ?)",
+        (since,),
+    ).fetchall()
+    if not rows:
+        return {
+            "status": "not_computable_yet",
+            "needs": (
+                f"cache-column data on real traffic (0 traffic_kind='real'"
+                f" row(s) in the last {days} day(s))"
+            ),
+        }
+    total_input = sum(r[0] for r in rows)
+    if total_input <= 0:
+        return {
+            "status": "not_computable_yet",
+            "needs": (
+                f"nonzero prompt_tokens on real rows to compute a cache"
+                f" share ({len(rows)} real row(s) in the last {days} day(s),"
+                " all zero prompt_tokens)"
+            ),
+        }
+    uncached = sum(max(p - read - creation, 0) for p, read, creation in rows)
+    cache_read_total = sum(r[1] for r in rows)
+    cache_creation_total = sum(r[2] for r in rows)
+    ratio = uncached / total_input
+    status = "met" if ratio >= 0.25 else "not_met"
+    return {
+        "status": status,
+        "detail": (
+            f"{ratio:.2%} truly-uncached paid input on real traffic"
+            f" ({uncached} of {total_input} input-side token(s) across"
+            f" {len(rows)} row(s) in the last {days} day(s); cache_read="
+            f"{cache_read_total}, cache_creation={cache_creation_total})"
+            " vs threshold >=25%"
+        ),
+    }
+
+
+def _r1_readiness(shadow_log_path) -> dict:
     try:
-        text = Path(delegation_table_path).read_text(encoding="utf-8")
+        text = Path(shadow_log_path).read_text(encoding="utf-8")
     except OSError:
         return {
             "status": "not_computable_yet",
-            "needs": f"DELEGATION_TABLE.md (not found at {delegation_table_path})",
+            "needs": f"docs/SHADOW_EVALUATION_LOG.md (not found at {shadow_log_path})",
         }
     counts = parse_shadow_eval_log(text)
     if not counts:
         return {
             "status": "not_computable_yet",
-            "needs": "judged Shadow Evaluation Log lines in DELEGATION_TABLE.md (none found)",
+            "needs": "judged Shadow Evaluation Log lines in docs/SHADOW_EVALUATION_LOG.md (none found)",
         }
     best_category, best = max(
         counts.items(), key=lambda kv: (kv[1]["pairs"], kv[1]["runs"])
@@ -281,14 +433,15 @@ def _r1_readiness(delegation_table_path) -> dict:
     }
 
 
-def phase2_readiness(conn: sqlite3.Connection, days: int, delegation_table_path=None) -> dict:
+def phase2_readiness(conn: sqlite3.Connection, days: int, shadow_log_path=None) -> dict:
     """Builds the Phase 2 readiness section: one entry per ROADMAP.md gate
     criterion (G1, G2, R1-R5, C1-C3). See the module comment above for the
-    four-status vocabulary. delegation_table_path defaults to
-    DELEGATION_TABLE.md next to this repo's metrics.py (one level up from
-    gateway/), so callers (including tests) can override it."""
-    if delegation_table_path is None:
-        delegation_table_path = Path(__file__).parent.parent / "DELEGATION_TABLE.md"
+    four-status vocabulary. shadow_log_path defaults to
+    docs/SHADOW_EVALUATION_LOG.md next to this repo's metrics.py (one level
+    up from gateway/, then into docs/), so callers (including tests) can
+    override it."""
+    if shadow_log_path is None:
+        shadow_log_path = Path(__file__).parent.parent / "docs" / "SHADOW_EVALUATION_LOG.md"
 
     return {
         "G1": _g1_readiness(conn, days),
@@ -296,19 +449,11 @@ def phase2_readiness(conn: sqlite3.Connection, days: int, delegation_table_path=
             "status": "manual_check",
             "pointer": (
                 "PROCESS/JUDGE_CALIBRATION_PROTOCOL.md -- last recorded result"
-                " judge-groq 13/13 (see CURRENT_CONTEXT.md)"
+                " (see CURRENT_CONTEXT.md)"
             ),
         },
-        "R1": _r1_readiness(delegation_table_path),
-        "R2": {
-            "status": "not_computable_yet",
-            "needs": (
-                "categorized real traffic (metrics.categorize() over"
-                " requests.traffic_kind='real' rows, currently 0; cc_usage"
-                " carries no prompt content by privacy design, D-0034, so it"
-                " cannot be categorized either)"
-            ),
-        },
+        "R1": _r1_readiness(shadow_log_path),
+        "R2": _r2_readiness(conn, days),
         "R3": {
             "status": "not_computable_yet",
             "needs": (
@@ -327,21 +472,12 @@ def phase2_readiness(conn: sqlite3.Connection, days: int, delegation_table_path=
             "status": "manual_check",
             "pointer": (
                 "ROADMAP.md Router gate R5 / CURRENT_CONTEXT.md Environment"
-                " Notes -- no ANTHROPIC_API_KEY / paid Lead in production as"
-                " of this digest"
+                " Notes"
             ),
         },
         "C1": _c1_readiness(conn, days),
         "C2": _c2_readiness(conn, days),
-        "C3": {
-            "status": "not_computable_yet",
-            "needs": (
-                "a cache-aware repetition measure combining requests.db prompt"
-                " content with cc_usage cache_read/cache_creation token"
-                " accounting (not yet built); also blocked by 0"
-                " traffic_kind='real' rows in requests"
-            ),
-        },
+        "C3": _c3_readiness(conn, days),
     }
 
 
@@ -358,7 +494,7 @@ def format_phase2_line(criterion: str, entry: dict) -> str:
     raise ValueError(f"unknown phase2_readiness status: {status!r}")
 
 
-def daily_digest(conn: sqlite3.Connection, days: int, delegation_table_path=None) -> dict:
+def daily_digest(conn: sqlite3.Connection, days: int, shadow_log_path=None) -> dict:
     since = f"-{days} days"
     per_day = conn.execute(
         """
@@ -369,7 +505,9 @@ def daily_digest(conn: sqlite3.Connection, days: int, delegation_table_path=None
                COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
                COALESCE(SUM(cost_usd), 0) AS cost_usd,
                ROUND(AVG(latency_ms), 1) AS avg_latency_ms,
-               ROUND(AVG(LENGTH(COALESCE(response, ''))), 1) AS avg_response_chars
+               ROUND(AVG(LENGTH(COALESCE(response, ''))), 1) AS avg_response_chars,
+               COALESCE(SUM(cache_read_input_tokens), 0) AS cache_read_tokens,
+               COALESCE(SUM(cache_creation_input_tokens), 0) AS cache_creation_tokens
         FROM requests
         WHERE day >= date('now', ?)
         GROUP BY day, model ORDER BY day, model
@@ -377,18 +515,23 @@ def daily_digest(conn: sqlite3.Connection, days: int, delegation_table_path=None
         (since,),
     ).fetchall()
 
+    # categories_heuristic: source is mixed -- stored category column takes
+    # priority when non-NULL (ground-truth from regression set or any
+    # tagged caller); categorize() is the fallback for untagged real
+    # traffic. The key "categories_heuristic" is kept for downstream
+    # compatibility.
     categories = defaultdict(lambda: {"requests": 0, "cost_usd": 0.0})
     prompts = conn.execute(
-        "SELECT model, prompt, COALESCE(cost_usd, 0) FROM requests"
+        "SELECT model, prompt, COALESCE(cost_usd, 0), category FROM requests"
         " WHERE substr(ts, 1, 10) >= date('now', ?) ORDER BY ts",
         (since,),
     ).fetchall()
-    for _, prompt, cost in prompts:
-        bucket = categories[categorize(prompt)]
+    for _, prompt, cost, stored_category in prompts:
+        bucket = categories[stored_category or categorize(prompt)]
         bucket["requests"] += 1
         bucket["cost_usd"] = round(bucket["cost_usd"] + cost, 6)
 
-    repetition = repetition_by_model((model, prompt) for model, prompt, _ in prompts)
+    repetition = repetition_by_model((model, prompt) for model, prompt, _, _cat in prompts)
 
     try:
         events = conn.execute(
@@ -418,6 +561,25 @@ def daily_digest(conn: sqlite3.Connection, days: int, delegation_table_path=None
                 "prompt_tokens": r[4], "completion_tokens": r[5],
                 "cost_usd": round(r[6], 6), "avg_latency_ms": r[7],
                 "avg_response_chars": r[8],
+                # Cache columns (NULL rows treated as 0; only Anthropic traffic populates these)
+                "cache_read_tokens": r[9],
+                "cache_creation_tokens": r[10],
+                # Fraction of input-side tokens served from cache. FIELD
+                # SEMANTICS (verified empirically on live rows): litellm
+                # Usage.prompt_tokens for anthropic is the FULL input side
+                # -- it already INCLUDES cache_read and cache_creation. So
+                # the denominator is prompt_tokens ALONE; adding the cache
+                # columns on top double-counts and understates the share.
+                # This is the same METRIC as tools/usage_report.py
+                # cache_read_share_of_input, but THERE cc_usage
+                # input_tokens is DISJOINT from the cache counters, so that
+                # sibling SUMS the three. Porting a formula across that
+                # pair must translate field semantics, not just copy
+                # arithmetic (the disjoint-columns cache-formula sibling in
+                # tools/usage_report.py).
+                "cache_read_share": (
+                    round(r[9] / r[4], 4) if r[4] > 0 else 0.0
+                ),
             }
             for r in per_day
         ],
@@ -433,7 +595,7 @@ def daily_digest(conn: sqlite3.Connection, days: int, delegation_table_path=None
              "spent_tokens": e[4], "limit_tokens": e[5]}
             for e in quota_events
         ],
-        "phase2_readiness": phase2_readiness(conn, days, delegation_table_path),
+        "phase2_readiness": phase2_readiness(conn, days, shadow_log_path),
     }
 
 
@@ -449,6 +611,10 @@ def format_digest(digest: dict) -> str:
             f" ({r['failures']} failed), {r['prompt_tokens']}+{r['completion_tokens']} tok,"
             f" ${r['cost_usd']:.4f}, {r['avg_latency_ms']} ms avg,"
             f" {r['avg_response_chars']} chars avg answer"
+        )
+        lines.append(
+            f"    cache: read={r['cache_read_tokens']} creation={r['cache_creation_tokens']}"
+            f" cache_read_share={r['cache_read_share']:.1%}"
         )
 
     lines.append("")
@@ -504,11 +670,12 @@ def main():
     parser.add_argument("--days", type=int, default=1)
     parser.add_argument("--json", action="store_true")
     parser.add_argument(
-        "--delegation-table",
+        "--shadow-log",
         default=None,
         help=(
-            "Path to DELEGATION_TABLE.md for the R1 criterion (default:"
-            " next to the repo root, one level up from this file)"
+            "Path to docs/SHADOW_EVALUATION_LOG.md for the R1 criterion"
+            " (default: docs/SHADOW_EVALUATION_LOG.md at the repo root, one"
+            " level up from this file)"
         ),
     )
     args = parser.parse_args()
@@ -517,7 +684,7 @@ def main():
         raise SystemExit(f"request log not found: {args.db}")
 
     conn = sqlite3.connect(args.db)
-    digest = daily_digest(conn, args.days, args.delegation_table)
+    digest = daily_digest(conn, args.days, args.shadow_log)
     print(json.dumps(digest, indent=2) if args.json else format_digest(digest))
 
 

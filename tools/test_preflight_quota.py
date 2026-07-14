@@ -283,7 +283,7 @@ def test_release_schedule_headroom_immediately_sufficient():
 
 GROQ_429_SHORT = (
     "Rate limit reached for model `llama-3.3-70b-versatile` in organization "
-    "`org_01kwkzk8sbeavb2cvwcvc367rw` service tier `on_demand` on tokens per "
+    "`org_xxxxxxxxxxxxxxxxxxxxxxxx` service tier `on_demand` on tokens per "
     "minute (TPM): Limit 12000, Used 11862, Requested 1758. Please try again "
     "in 3.1s. Need more tokens? Upgrade to Dev Tier today at "
     "https://console.groq.com/settings/billing"
@@ -365,7 +365,7 @@ def test_main_limit_tokens_override_avoids_exit_two(tmp_path, capsys):
     assert code in (0, 1)  # measured GO/NO-GO, not the exit-2 error path
 
 
-# ---- N5 (critic t-027): locked db fails loud, not silently, not a traceback ----
+# ---- N5 (a documented review finding): locked db fails loud, not silently, not a traceback ----
 
 def test_discover_dbs_raises_on_locked_database(tmp_path):
     # Sibling fix (found while testing usage_in_window's guard): discover_dbs's
@@ -426,7 +426,7 @@ def test_main_exit_two_on_locked_database(tmp_path, capsys, monkeypatch):
     assert "requests.db" in err
 
 
-# ---- N3 (critic t-027): probe-informed conservative go_at + reconciliation line ----
+# ---- N3 (a documented review finding): probe-informed conservative go_at + reconciliation line ----
 
 def test_format_text_reports_conservative_horizon_and_reconciliation():
     now = datetime.datetime(2026, 7, 10, 12, 0, 0)

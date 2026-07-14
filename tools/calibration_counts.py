@@ -39,12 +39,14 @@ try:  # keep output safe on Windows consoles with a non-UTF8 codepage
 except AttributeError:
     pass
 
-DEFAULT_BY_SINCE = "2026-07-10T13:14:00"
-# Pre-typed-fields-schema era of the journal (see CLAUDE.md's "Routing
-# log" section and the weekly calibration protocol's field-completeness
-# check): events with a ts earlier than this cutoff are read manually,
-# append-only, and excluded from the field-completeness candidate count.
-LEGACY_CUTOFF = "2026-07-08T20:00:00"
+# Migration cutovers. A FRESH install enforces every typed field from
+# day one -- leave both at the epoch. If you are adopting the policy on
+# an EXISTING journal, set these to your own cutover moments: events
+# earlier than the cutoff are read manually, append-only, and excluded
+# from the field-completeness candidate count (see CLAUDE.md's "Routing
+# log" section and the weekly calibration protocol).
+DEFAULT_BY_SINCE = "1970-01-01T00:00:00"
+LEGACY_CUTOFF = "1970-01-01T00:00:00"
 
 MODEL_REQUIRED_EVENTS = {"delegated", "escalated", "accepted", "rejected"}
 TASK_ID_REQUIRED_EVENTS = {"delegated", "accepted", "rejected", "escalated", "defect_found"}

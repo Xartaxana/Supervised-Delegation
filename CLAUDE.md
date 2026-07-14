@@ -57,7 +57,10 @@ separately in this deployment).
    rule): the `accepted` event carries, in its `witness` field (typed-
    fields rule), the actual output of the verification run (test
    command + result), not a paraphrase; a report with no witness →
-   `rejected`. A self-activating enforcement file (a hook in the
+   `rejected`. A task with a UI result: the verification run includes
+   DRIVING the UI; the witness is a before/after screenshot or
+   recording — a purely textual witness is insufficient on a UI task.
+   A self-activating enforcement file (a hook in the
    active hooks path, etc.) is never placed on its live path by
    builder: builder hands it over as content in the report, or under a
    neighboring filename; Lead puts it on the real path at acceptance
@@ -95,7 +98,11 @@ separately in this deployment).
    `run_in_background`; synchronous only when the next step depends
    on the result AND there is no other work or operator question
    pending. Accepting the result on completion is mandatory (flat
-   delegation rule).
+   delegation rule). The visible dispatch label (`description`) starts
+   with the worker's model: "haiku: …" / "sonnet: …" / "opus: …" (a
+   non-standard agent: its actual model) — the operator sees the tier
+   in the background-task list, the same self-declaration as the
+   journal's `model` field (reconciled by calibration check 4).
 8. Universal skip rule (silent-skip violation class): a task that
    maps to a cheap tier, done by Lead itself, is legitimate ONLY with
    a `dispatch_skipped` event (agent = the skipped tier, reason
@@ -173,7 +180,21 @@ separately in this deployment).
    — the dispatch attaches the spec/DoD of the work under review,
    otherwise only general quality is checkable, not fit to the task. A
    dispatch with no DoD is returned by the worker as questions, before
-   work starts. Lead-tier tasks and the judge role are covered by
+   work starts. Alongside the DoD, a dispatch carries a CONTEXT
+   MANIFEST (dispatch-context-manifest rule): "given" — an enumeration
+   of the files/data injected into the worker (the starting basket;
+   its sufficiency is the Lead's responsibility); a WRITING dispatch
+   must also carry "owns" (the paths it may write), "non-goals" and
+   "handoff" (what comes back for acceptance); a parallel fan-out
+   declares ownership per rule 4 plus an optional maxConcurrent cap.
+   The manifest is DECLARATIVE on reads and NORMATIVE on writes: the
+   worker reads the repo freely, and going past the basket is not a
+   violation but a report line — "needed beyond the manifest"
+   (telemetry on spec quality); for a targeted read-only dispatch the
+   manifest is simply the explicit enumeration of what's attached in
+   the dispatch text, no fields. A writing/parallel dispatch with no
+   manifest is returned by the worker as questions, same as one with
+   no DoD. Lead-tier tasks and the judge role are covered by
    their own dedicated mechanisms (the Lead exam, weekly calibration,
    and judge calibration — not repeated here).
 
@@ -182,8 +203,19 @@ separately in this deployment).
 One JSON line per event, written with an Edit/Write tool:
 
 ```json
-{"ts":"2026-07-08T12:00:00","event":"delegated","agent":"builder","model":"sonnet","task_id":"t-042","category":"implementation","notes":"brief: what was delegated"}
+{"ts":"2026-07-08T12:00:00","event":"delegated","agent":"builder","model":"sonnet","task_id":"t-042","category":"implementation","worker_ref":"agent:<id>","notes":"brief: what was delegated"}
 ```
+
+The journal is append-only and records ACCOMPLISHED FACTS, not
+intentions (the facts-not-intentions rule): `delegated`/`escalated`
+are written AFTER the dispatch call returns, same turn; a new
+`delegated` line carries a `worker_ref` — a non-empty handle of the
+launch (a background-task id, a job id, `cli:<ts>`, `retro:<...>`) —
+the value exists only after launch, there is nothing to fill in ahead
+of time. Open dispatches are reconciled at both session boundaries —
+the SessionStart hook and the session-handoff check — worker alive /
+result pending / phantom; a phantom is closed with a note on the next
+event's `notes` field.
 
 Every event line — including `journal_created` and `lead_degraded` —
 carries five base fields checked by `tools/journal_validator.py`:
@@ -199,6 +231,7 @@ notes are a human-readable extra, not a fact carrier for gates):
 defect_found — it threads through a task; `attempt` (number) and
 `failure_class` (spec/capability/recon/tooling) go on `rejected`;
 `witness` (the actual run output) goes on `accepted` for builder;
+`worker_ref` (a non-empty handle of the launch) goes on `delegated`;
 `ref` (the task_id of the original `accepted`) goes on
 `defect_found`. Events predating this policy's rollout are never
 rewritten (the log is append-only). Issuing a task_id means

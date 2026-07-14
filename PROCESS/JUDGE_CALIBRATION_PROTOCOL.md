@@ -29,8 +29,10 @@ synthetic set is a snapshot, not a guarantee.
 
 1. **Status changes require review.** A judge verdict that CHANGES a
    DELEGATION_TABLE.md row status is accepted only after the chief
-   judge reviews the actual pairs. `--update-table` output is not
-   self-certifying.
+   judge reviews the actual pairs. `--record-evidence` output is not
+   self-certifying: no code path writes table status cells directly,
+   only the weekly calibration process does, citing the evidence
+   lines this run appended.
 
 2. **Reviews grow the calibration set.** Every pair the chief judge
    reviews (rule 1 or rule 3) is appended to

@@ -153,7 +153,7 @@ def test_yesterday_spend_does_not_count(env):
     assert events(env) == []
 
 
-# --- Sliding-window token quotas (t-018) -----------------------------
+# --- Sliding-window token quotas -----------------------------
 
 @pytest.fixture()
 def quota_env(tmp_path, monkeypatch):
@@ -257,7 +257,7 @@ def test_quota_block_message_has_wait_estimate(quota_env):
     assert "Retry in ~" in exc.value.detail
 
 
-# --- F1 (critic, t-018 attempt 2): three properties of tokens_in_window,
+# --- F1 (carried forward from review): three properties of tokens_in_window,
 # each locked with its own assert on spent_tokens. ------------------------
 
 def test_tokens_in_window_model_isolation(quota_env):

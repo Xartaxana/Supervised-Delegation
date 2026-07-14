@@ -131,7 +131,7 @@ The request is logged like any other, so a `success` row for model
 ## Ledger digest
 
 ```
-python metrics.py [--db PATH] [--days N] [--json] [--delegation-table PATH]
+python metrics.py [--db PATH] [--days N] [--json] [--shadow-log PATH]
 ```
 
 Run from gateway/ (same cwd-relative import convention as the proxy).
@@ -159,7 +159,7 @@ local model server) running.
 ## Shadow Evaluation
 
 ```
-python shadow_eval.py --source-model lead --target-model builder [--days N] [--sample N] [--update-table] [--json]
+python shadow_eval.py --source-model lead --target-model builder [--days N] [--sample N] [--record-evidence] [--json]
 ```
 
 Samples successful requests logged for `--source-model`, replays each
@@ -190,9 +190,13 @@ judged (self-judging inflates agreement) and one that agrees with your
 manually-labeled pairs on most or all of `judge_calibration.json`
 before adopting it as the default.
 
-`--update-table` writes `validated`/`rejected` verdicts into
-`DELEGATION_TABLE.md` row Status cells and appends one line per run to
-its "Shadow Evaluation Log" section (evidence for Update Rule 1).
+`--record-evidence` appends one evidence line per run (verdict
+vocabulary: `provisionally_validated`/`rejected`/`estimated`) to
+`docs/SHADOW_EVALUATION_LOG.md` (`--shadow-log`, default
+`../docs/SHADOW_EVALUATION_LOG.md`) -- kept as its own file so the
+table stays lean. No code path writes DELEGATION_TABLE.md status
+cells: statuses move only via weekly calibration citing these
+evidence lines (Update Rule 1).
 
 Caveat (Update Rule 4): this replays each prompt once. It measures
 one-shot answer quality and cost, not retry-loop cost -- a category

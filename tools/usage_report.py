@@ -13,7 +13,7 @@ PRIVACY (D-0034, unified plan section 5): this script reads only
 reads message content, tool inputs/outputs, or any prompt text, and
 writes none to the database or to reports.
 
-Empirical findings (verified 2026-07-07 on this machine, see
+Empirical findings (observed empirically across real transcripts, see
 CURRENT_CONTEXT.md "Delegated Task 5" for detail):
 
 - One assistant API turn can appear as MULTIPLE JSONL lines sharing
@@ -22,28 +22,29 @@ CURRENT_CONTEXT.md "Delegated Task 5" for detail):
   (e.g. multiple tool_use calls). `uuid` is unique per LINE, not per
   turn, so it is the wrong dedupe key: dedupe by `requestId` (first
   occurrence wins) or the API's true row identity would be inflated
-  by a large factor (419 duplicate-requestId groups found in a single
-  project's transcripts alone).
+  by a large factor (hundreds of duplicate-requestId groups found in
+  a single project's transcripts alone).
 - `message.model == "<synthetic>"` rows are harness-internal
   rate-limit notices ("You've hit your session limit..."), always
   carrying all-zero usage. Skipped per spec.
 - No `isSidechain: true` assistant rows exist anywhere among the
-  TOP-LEVEL `<project>/*.jsonl` transcripts on this machine (0 of
-  ~16k), but the column is populated regardless since subagent
-  traffic is real traffic that must stay distinguishable (Lead
-  clarification, item 2 of the spec). Sidechain traffic DOES exist,
-  just not in that glob -- see Delegated Task 6 below.
+  TOP-LEVEL `<project>/*.jsonl` transcripts observed in a live
+  deployment (0 of tens of thousands checked), but the column is
+  populated regardless since subagent traffic is real traffic that
+  must stay distinguishable (Lead clarification, item 2 of the spec).
+  Sidechain traffic DOES exist, just not in that glob -- see Delegated
+  Task 6 below.
 - Non-assistant line `type`s observed: user, ai-title, last-prompt,
   queue-operation, system, mode, permission-mode, file-history-
   snapshot, pr-link, attachment. None carry a `usage` field; all are
   skipped (only `type == "assistant"` is read).
 
-Delegated Task 6 (2026-07-07/08 follow-up): subagent/sidechain
-transcripts live at a SECOND, deeper path --
+Delegated Task 6 (follow-up): subagent/sidechain transcripts live at
+a SECOND, deeper path --
 `<project>/<session-id>/subagents/agent-*.jsonl` -- one file per
 dispatched subagent, invisible to the original single glob above.
-Re-verified empirically across all 61 such files on this machine
-(3829 assistant lines total) before wiring in the second glob:
+Re-verified empirically across dozens of such files (thousands of
+assistant lines total) before wiring in the second glob:
 - every line's `sessionId` JSON field equals the PARENT session's
   UUID (the `<session-id>` directory name one level above
   `subagents/`), 0 mismatches -- so these files' turns correctly
@@ -54,50 +55,113 @@ Re-verified empirically across all 61 such files on this machine
   fallback below remains untested on real data but is kept for the
   same defensive reason as the top-level case).
 - `agentId` is present on all of them. `promptId` was NOT found on
-  any (0 of 3829) on this machine, despite being listed as an
-  expected extra field in the spec -- noted here since it contradicts
-  that assumption; harmless either way since neither field is read.
+  any of the lines checked, despite being listed as an expected extra
+  field in the spec -- noted here since it contradicts that
+  assumption; harmless either way since neither field is read.
 - No `dedupe_key` (session_id + requestId) collisions were found
   between a parent session's own turns and its subagents' turns, nor
   between sibling subagent files of the same session (checked across
-  all 14 sessions on this machine that have a subagents/ directory).
+  every session observed that has a subagents/ directory).
 
-Delegated Task 7 (2026-07-08 follow-up): agent attribution + haiku
-pricing gaps closed. Re-verified empirically across all 62 subagent
-files on this machine (6631 lines total, 3917 assistant lines) before
+Delegated Task 7 (follow-up): agent attribution + haiku pricing gaps
+closed. Re-verified empirically across dozens of subagent files
+(thousands of lines total, thousands of assistant lines) before
 wiring in the two new columns:
 - `agentId` is a per-line top-level field on EVERY line of a subagent
-  file (assistant and non-assistant alike; 6631 of 6631) -- confirms
-  the module docstring's earlier claim and gives a stable per-row
-  agent identity key.
+  file (assistant and non-assistant alike; all lines checked) --
+  confirms the module docstring's earlier claim and gives a stable
+  per-row agent identity key.
 - `agentType` (the human-readable subagent slug, e.g.
   "test-maintainer") does NOT appear anywhere as a literal JSON key on
-  any of the 6631 lines checked -- contradicts the Task 6 report's
+  any of the lines checked -- contradicts the Task 6 report's
   phrasing ("agentType: test-maintainer"), which turns out to have
   been describing a value, not a literal key. The literal key holding
   that exact value is `attributionAgent`, present as a TOP-LEVEL field
-  on 3911 of 3917 assistant lines (the 6 missing are all
+  on nearly all assistant lines (the handful missing are all
   `model == "<synthetic>"` harness stop-sequence lines, already
   skipped by SKIP_MODELS regardless). Every agentId maps to exactly
-  one attributionAgent value across all 62 files (0 files with a
+  one attributionAgent value across all files checked (0 files with a
   varying value) -- confirmed identical to the *sidecar*
   `agent-<id>.meta.json` file's own `agentType` field (spot-checked:
-  agent-aade8b2de22556abd's meta.json says
-  `"agentType":"fix-verifier"`, and every assistant line in that same
-  agent's .jsonl carries `"attributionAgent":"fix-verifier"`) -- so
-  `attributionAgent` is the reliable, per-line, no-extra-file-read
-  source used for the new `agent_type` column below. The .meta.json
-  sidecars (one per subagent file, holding agentType/description/
-  toolUseId/spawnDepth) are session-level metadata files, NOT matched
-  by any existing transcript glob, and are intentionally left unread --
+  an example agent's meta.json says `"agentType":"example-agent"`,
+  and every assistant line in that same agent's .jsonl carries
+  `"attributionAgent":"example-agent"`) -- so `attributionAgent` is
+  the reliable, per-line, no-extra-file-read source used for the new
+  `agent_type` column below. The .meta.json sidecars (one per
+  subagent file, holding agentType/description/toolUseId/spawnDepth)
+  are session-level metadata files, NOT matched by any existing
+  transcript glob, and are intentionally left unread --
   `attributionAgent` already gives the same value per-line.
 - Top-level (non-subagent) transcript lines carry neither `agentId`
   nor `attributionAgent`; both new columns are NULL there, as
   expected.
-- Model `claude-haiku-4-5-20251001` was observed with `NULL`
-  accounted_cost_usd (unpriced) in this machine's existing
-  gateway/requests.db (7 rows, all NULL) before this task's pricing
-  fix.
+- A model id may appear in the gateway log but never in transcripts
+  -- its rows fall back to NULL pricing (observed empirically with a
+  haiku-tier model id's accounted_cost_usd before this task's pricing
+  fix).
+
+Recursive subagent transcript depth (regression follow-up): subagent
+transcripts can also appear NESTED further below subagents/ -- e.g. a
+workflow tool that groups its agent transcripts under an extra
+subagents/workflows/wf_*/ layer. The original one-directory-deep glob
+(subagents/*.jsonl) and the "immediate parent == subagents" check in
+iter_assistant_turns() both silently miss any such deeper nesting -- a
+silent undercount, not an error, since a file the glob never matches
+simply contributes zero rows without complaint. Fixed by widening the
+glob to subagents/**/*.jsonl (glob.glob(..., recursive=True)) and by
+walking UP the path's parents in iter_assistant_turns() to find the
+nearest ancestor literally named "subagents", instead of checking only
+the immediate parent -- both changes are depth-agnostic, so any future
+nesting under subagents/ is covered automatically, not just one extra
+level. Any sidecar file the wider glob also matches (e.g. a workflow
+tool's own journal/metadata file) stays inert: iter_assistant_turns()
+already skips every line whose `type` isn't "assistant" before it ever
+looks at `usage`, so a file with no assistant/usage lines simply
+yields zero rows, not an error.
+
+Split-turn output_tokens correction (regression follow-up): the
+earlier claim above that split lines sharing one requestId always
+carry an IDENTICAL `message.usage` block turns out to hold only for
+MAIN-CHAIN turns (first line byte-identical to last). For SUBAGENT/
+SIDECHAIN turns, input/cache token counts still match across the split
+lines, but `output_tokens` is a small PLACEHOLDER value on every line
+except the one that carries the real total -- so deduping by
+first-occurrence systematically threw away most of the real output
+token count for subagent traffic.
+
+Fixed first by switching the importer's dedupe from first-occurrence-
+wins to last-occurrence-wins. That fix was itself wrong: the same
+dedupe_key (session_id + requestId) can also collide BETWEEN two
+sibling subagent files under one session's subagents/ directory, not
+only between split lines of a single file. Since import_transcripts()
+visits files in `sorted(paths)` order, "last occurrence" tracks glob/
+filename sort order, not which file actually holds the real value --
+so last-wins can pick a later-sorting file's placeholder over an
+earlier file's real number, an outright regression versus even
+first-wins for that specific collision shape.
+
+Fixed instead by tie-breaking on VALUE rather than visit order: for a
+given dedupe_key, `output_tokens` (and `accounted_cost_usd`,
+recomputed from it together with the row's input/cache tokens, which
+are identical across colliding lines/files) is only ever UPDATEd when
+the newly-seen line's `output_tokens` is STRICTLY GREATER than what is
+already stored (MAX-wins). Because a placeholder is always small and
+the real value is always the largest number seen for a given
+dedupe_key -- true both for split lines within one file and for
+cross-file collisions -- taking the max is correct regardless of file
+iteration order, line order within a file, or how many times the
+importer is re-run: the outcome for a given dedupe_key becomes a pure
+function of the SET of lines sharing it, not of the order they are
+visited in. `agent_id`/`agent_type` keep their original COALESCE
+(fill-if-still-NULL) semantics, unaffected by this change -- those
+fields have no placeholder-vs-real split, so a max/order-independent
+rule would be pointless for them.
+
+RE-RUNNING the importer over history (no separate migration script) is
+how already-persisted rows with a too-low `output_tokens` get
+corrected -- the same mechanism that already backfills agent_id/
+agent_type for older rows now also backfills correct output_tokens/
+cost for rows imported before this fix.
 """
 
 import argparse
@@ -143,17 +207,29 @@ CREATE TABLE IF NOT EXISTS cc_usage (
 _TASK7_NEW_COLUMNS = ("agent_id", "agent_type")
 
 # dedupe_key convention: session_id + ":" + requestId. Verified empirically
-# 2026-07-07 that a single API turn can be split across multiple JSONL
-# lines (distinct `uuid` per line, identical `message.usage`, shared
-# `requestId`) -- requestId (scoped to its session; request IDs are not
-# guaranteed globally unique across sessions) is the correct one-row-
-# per-API-turn key, not uuid. See module docstring.
+# that a single API turn can be split across multiple JSONL lines
+# (distinct `uuid` per line, shared `requestId`) -- requestId (scoped
+# to its session; request IDs are not guaranteed globally unique
+# across sessions) is the correct one-row-per-API-turn key, not uuid.
+# The split lines' `message.usage` blocks are NOT always identical
+# (see module docstring's "Split-turn output_tokens correction"):
+# identical for main-chain turns, but for subagent/sidechain turns
+# only input/cache tokens match across lines -- output_tokens is a
+# placeholder except on the line that carries the real value. A
+# dedupe_key can also collide BETWEEN two sibling subagent files of
+# the same session, not just between split lines of one file -- see
+# module docstring. Because which file/line is "first" or "last" is an
+# artifact of `sorted(paths)` glob order, not a signal of which value
+# is real, import_transcripts() dedupes by MAX(output_tokens), not by
+# occurrence order: a stored row's output_tokens/accounted_cost_usd is
+# only overwritten when a newly-seen line's output_tokens is strictly
+# greater. See module docstring.
 
 # Accounted API list prices, USD per token (D-0032 Rule #1, D-0034).
 # Source: Anthropic pricing, as cached in the claude-api skill
 # (SKILL.md "Current Models", cache date 2026-06-24) and cross-checked
 # against gateway/config.yaml's own anthropic/claude-fable-5 and
-# anthropic/claude-sonnet-5 aliases in this repo -- verified 2026-07-07.
+# anthropic/claude-sonnet-5 aliases in this repo -- cross-checked empirically.
 # Cache write/read multipliers are the documented Anthropic-wide rule
 # (shared/prompt-caching.md in the same skill): cache writes cost
 # 1.25x base input price at the default 5-minute TTL (2x at 1-hour
@@ -180,11 +256,12 @@ PRICES_PER_TOKEN_USD = {
     # Scout tier (Delegated Task 7, GAP 2): $1.00/$5.00 per 1M tokens,
     # API list price. Every other model above happens to appear in
     # real transcripts under its bare id (no date suffix); haiku is
-    # the one exception observed on this machine --
-    # "claude-haiku-4-5-20251001" (7 rows in gateway/requests.db,
-    # verified 2026-07-08) -- so both the exact dated id AND the bare
-    # id are keyed here, mapping to the same price tuple, in case a
-    # future transcript ever reports the bare form instead.
+    # the one exception observed in practice --
+    # "claude-haiku-4-5-20251001" (observed with NULL accounted_cost_usd
+    # in gateway/requests.db before this pricing fix) -- so both the
+    # exact dated id AND the bare id are keyed here, mapping to the
+    # same price tuple, in case a future transcript ever reports the
+    # bare form instead.
     "claude-haiku-4-5-20251001": (1.00 / 1_000_000, 5.00 / 1_000_000),
     "claude-haiku-4-5": (1.00 / 1_000_000, 5.00 / 1_000_000),
 }
@@ -194,20 +271,28 @@ SKIP_MODELS = {"<synthetic>"}
 
 def transcript_glob(base_dir: Path = None) -> list:
     """Returns the default glob PATTERNS (plural -- a list, not a
-    single string) for Claude Code transcripts on this machine:
+    single string) for Claude Code transcripts:
 
     1. top-level session transcripts: <project>/<session>.jsonl
-    2. subagent/sidechain transcripts, one directory layer deeper
-       (Delegated Task 6): <project>/<session>/subagents/agent-*.jsonl
+    2. subagent/sidechain transcripts, ANY depth under subagents/
+       (Delegated Task 6, extended by a later regression fix):
+       <project>/<session>/subagents/agent-*.jsonl (flat, Task 6) AND
+       any further nesting below subagents/ (observed from a workflow
+       tool that groups its agent transcripts under an extra
+       subagents/workflows/wf_*/ layer). The `**` component matches
+       zero or more directories, so this single pattern covers both
+       the flat and any deeper layout; import_transcripts() passes
+       recursive=True to glob.glob() so `**` is honored.
 
-    The two layouts do not share a single glob pattern, hence the
-    list. import_transcripts() accepts either this list or a single
-    pattern string (the latter for CLI-override / backward-compat
-    with existing callers/tests that pass one path)."""
+    The two top-level layouts (session vs. subagent) do not share a
+    single glob pattern, hence the list. import_transcripts() accepts
+    either this list or a single pattern string (the latter for
+    CLI-override / backward-compat with existing callers/tests that
+    pass one path)."""
     base = base_dir or (Path.home() / ".claude" / "projects")
     return [
         str(base / "*" / "*.jsonl"),
-        str(base / "*" / "*" / "subagents" / "*.jsonl"),
+        str(base / "*" / "*" / "subagents" / "**" / "*.jsonl"),
     ]
 
 
@@ -221,23 +306,30 @@ def iter_assistant_turns(path: str):
     transcript's directory layout (see below).
 
     project / fallback session_id derivation handles BOTH transcript
-    layouts (Delegated Task 6):
+    layouts (Delegated Task 6, extended by a later regression fix):
     - top-level: <project>/<session>.jsonl -- verified empirically
-      2026-07-07 that every real transcript's per-line "sessionId"
-      always equals its own filename stem (0 mismatches), so the
-      filename stem is both the project's session and the fallback.
-    - subagent/sidechain: <project>/<session>/subagents/agent-*.jsonl
-      -- the file's OWN stem is the sub-agent id (e.g. "agent-a6d8..."),
-      not a session id, so it would be wrong as a session_id fallback;
-      the real parent session id is the directory name one level above
-      "subagents/". Detected by checking whether the immediate parent
-      directory is literally named "subagents" (re-verified across 61
-      real subagent files, 0 sessionId mismatches against this
-      directory name -- see module docstring)."""
+      that every real transcript's per-line "sessionId" always equals
+      its own filename stem, so the filename stem is both the
+      project's session and the fallback.
+    - subagent/sidechain, ANY depth under subagents/ --
+      <project>/<session>/subagents/agent-*.jsonl (flat, Task 6) or
+      nested further below subagents/ (e.g. a workflow tool's extra
+      subagents/workflows/wf_x/... layer) -- the file's OWN stem is
+      the sub-agent id (e.g. "agent-a6d8..."), not a session id, so it
+      would be wrong as a session_id fallback; the real parent session
+      id is the directory name one level ABOVE the nearest ancestor
+      directory literally named "subagents", regardless of how many
+      extra directories sit between "subagents" and the file itself.
+      Detected by walking up the path's parents to find that
+      "subagents" ancestor, instead of checking only the immediate
+      parent (which silently misses any nesting deeper than one
+      level)."""
     p = Path(path)
-    if p.parent.name == "subagents":
-        project = p.parent.parent.parent.name
-        filename_session_id = p.parent.parent.name
+    subagents_dir = next((a for a in p.parents if a.name == "subagents"), None)
+    if subagents_dir is not None:
+        session_dir = subagents_dir.parent
+        project = session_dir.parent.name
+        filename_session_id = session_dir.name
     else:
         project = p.parent.name
         filename_session_id = p.stem
@@ -263,7 +355,7 @@ def iter_assistant_turns(path: str):
             if not request_id:
                 # No requestId to dedupe on -- fall back to this line's own
                 # uuid so the row is still captured (rare/defensive path;
-                # not observed in practice on this machine).
+                # not observed in practice).
                 request_id = obj.get("uuid")
             yield {
                 "ts": obj.get("timestamp"),
@@ -377,21 +469,42 @@ def import_transcripts(glob_pattern, db_file: Path):
     Task 6). Paths matched by more than one pattern are processed only
     once.
 
-    Backfill (Delegated Task 7): this function ALSO backfills rows
-    that were already imported before agent_id/agent_type existed as
-    columns, or before their model had a price. There is no separate
-    --backfill flag -- backfilling runs automatically as part of every
-    normal import, since both passes are naturally idempotent (a
-    second run touches 0 rows once caught up):
-    - agent fields: when INSERT OR IGNORE finds a dedupe_key already
-      present (rowcount == 0) and this transcript line carries an
-      agent_id/agent_type, an UPDATE ... WHERE agent_id IS NULL OR
-      agent_type IS NULL fills the existing row's NULL column(s)
-      without touching a row that already has them.
-    - costs: backfill_costs() runs once at the end over the whole
+    Backfill (Delegated Task 7, extended by a later regression fix):
+    this function ALSO backfills rows that were already imported
+    before agent_id/agent_type existed as columns, before their model
+    had a price, or with a too-low output_tokens because an earlier
+    import run kept a placeholder value instead of the real one --
+    whether that placeholder came from an earlier line of the same
+    split subagent turn, or from a SIBLING subagent file sharing the
+    same dedupe_key (see module docstring for why occurrence-order
+    tie-breaks, first OR last, are both wrong for that case). There is
+    no separate --backfill flag -- backfilling runs automatically as
+    part of every normal import, since all of it is naturally
+    idempotent (re-running over unchanged data touches 0 NEWLY-
+    imported rows, though see the note below on why the backfill
+    UPDATE itself always runs regardless):
+    - output_tokens / accounted_cost_usd: when INSERT OR IGNORE finds
+      a dedupe_key already present (rowcount == 0) -- whether from an
+      earlier line/file processed earlier in THIS run, or from a row a
+      PREVIOUS run already inserted -- a CONDITIONAL UPDATE overwrites
+      output_tokens and accounted_cost_usd with this line's values
+      ONLY IF this line's output_tokens is STRICTLY GREATER than what
+      is currently stored (MAX-wins). This makes the final value for a
+      given dedupe_key depend only on the SET of lines/files that
+      share it, not on the order they are visited in -- unlike either
+      first- or last-occurrence-wins.
+    - agent fields: a separate, unconditional UPDATE fills
+      agent_id/agent_type via COALESCE (keep-existing-if-already-set,
+      fill-if-NULL) -- unlike output_tokens these don't have a
+      placeholder-vs-real split, so a max/order-independent rule would
+      be pointless; COALESCE is what Task 7 shipped and stays
+      unchanged.
+    - costs for rows this run's transcripts don't touch at all:
+      backfill_costs() still runs once at the end over the whole
       table, recomputing accounted_cost_usd for any row still NULL
       (covers rows whose model has since been added to
-      PRICES_PER_TOKEN_USD, e.g. haiku, GAP 2)."""
+      PRICES_PER_TOKEN_USD, e.g. haiku, GAP 2, when the transcript
+      that produced that row is no longer being re-scanned)."""
     patterns = [glob_pattern] if isinstance(glob_pattern, str) else list(glob_pattern)
     warnings = []
     sessions_seen = set()
@@ -399,7 +512,13 @@ def import_transcripts(glob_pattern, db_file: Path):
     conn = _connect(db_file)
     paths = set()
     for pattern in patterns:
-        paths.update(glob.glob(pattern))
+        # recursive=True so a `**` component (the subagents/**/*.jsonl
+        # default pattern) matches any depth, including zero extra
+        # directories (the flat Task-6 layout); it is a no-op for
+        # patterns without `**` (the top-level session pattern), so
+        # this is safe for both defaults and any custom
+        # --transcripts-glob override.
+        paths.update(glob.glob(pattern, recursive=True))
     try:
         for path in sorted(paths):
             for turn in iter_assistant_turns(path):
@@ -429,19 +548,52 @@ def import_transcripts(glob_pattern, db_file: Path):
                     ),
                 )
                 rows_imported += cur.rowcount
-                if cur.rowcount == 0 and (turn["agent_id"] is not None or turn["agent_type"] is not None):
-                    # Row already existed (pre-Task-7 import, or a prior
-                    # run of this same loop) -- backfill its agent
-                    # fields if still NULL. COALESCE keeps whatever is
-                    # already there, so this is a no-op once filled.
+                if cur.rowcount == 0:
+                    # Row already existed -- either a dedupe_key seen
+                    # earlier in THIS run (an earlier line of a split
+                    # subagent turn, possibly from a DIFFERENT sibling
+                    # file) or a row left over from a PREVIOUS import
+                    # run. Re-running the importer is how history gets
+                    # corrected, but occurrence order (first or last)
+                    # is the WRONG tie-break -- it tracks
+                    # `sorted(paths)` glob order, not which line holds
+                    # the real value. Tie-break on VALUE instead: only
+                    # overwrite output_tokens/accounted_cost_usd when
+                    # THIS line's output_tokens is strictly greater
+                    # than what is already stored (MAX-wins) --
+                    # order-independent, a no-op in value for
+                    # main-chain turns (whose duplicate lines are
+                    # byte-identical, so never strictly greater).
+                    conn.execute(
+                        """
+                        UPDATE cc_usage
+                        SET output_tokens = ?,
+                            accounted_cost_usd = ?
+                        WHERE dedupe_key = ? AND output_tokens < ?
+                        """,
+                        (
+                            turn["output_tokens"], cost,
+                            turn["dedupe_key"], turn["output_tokens"],
+                        ),
+                    )
+                    # agent fields keep their original COALESCE
+                    # (fill-if-still-NULL) semantics from Task 7,
+                    # unconditionally (independent of the
+                    # output_tokens comparison above) -- unlike
+                    # output_tokens they have no placeholder-vs-real
+                    # split, so there is nothing for a max rule to fix
+                    # there.
                     conn.execute(
                         """
                         UPDATE cc_usage
                         SET agent_id = COALESCE(agent_id, ?),
                             agent_type = COALESCE(agent_type, ?)
-                        WHERE dedupe_key = ? AND (agent_id IS NULL OR agent_type IS NULL)
+                        WHERE dedupe_key = ?
                         """,
-                        (turn["agent_id"], turn["agent_type"], turn["dedupe_key"]),
+                        (
+                            turn["agent_id"], turn["agent_type"],
+                            turn["dedupe_key"],
+                        ),
                     )
         backfill_costs(conn)
         conn.commit()
@@ -662,9 +814,10 @@ def main():
             "Override the transcript glob with a SINGLE custom pattern "
             "(default, with no override: TWO patterns are scanned -- "
             "~/.claude/projects/*/*.jsonl for session transcripts and "
-            "~/.claude/projects/*/*/subagents/*.jsonl for subagent/"
-            "sidechain transcripts, Delegated Task 6). Passing this flag "
-            "replaces both default patterns with just this one."
+            "~/.claude/projects/*/*/subagents/**/*.jsonl (recursive, "
+            "any depth) for subagent/sidechain transcripts, Delegated "
+            "Task 6). Passing this flag replaces both default patterns "
+            "with just this one."
         ),
     )
     parser.add_argument(

@@ -21,7 +21,10 @@ You receive a spec and implement it. The coordinator writes the spec — not you
    from observed REALITY is a fact — record it in the report.) A spec
    with no DoD — no acceptance criteria and no verification run
    (DoD-in-every-dispatch rule) — counts as a missing requirement:
-   return it as questions, without starting work.
+   return it as questions, without starting work. A writing spec with
+   no context manifest — no "given"/"owns" fields
+   (dispatch-context-manifest rule) — is the same case: return it as
+   questions.
 2. Don't launch other agents (flat delegation rule). If the task
    turns out to be decomposable into independent parts, stop and
    return to the coordinator a "decomposable: <how exactly it
@@ -36,7 +39,10 @@ You receive a spec and implement it. The coordinator writes the spec — not you
    mandatory part of the report: the command plus its result, not a
    paraphrase like "tests pass." Without a witness, the coordinator
    will not accept the result. You don't self-certify — acceptance
-   belongs to the coordinator.
+   belongs to the coordinator. Reading the repo beyond the manifest's
+   "given" basket (dispatch-context-manifest rule) is free — but list
+   in the report what you actually needed beyond it: that's telemetry
+   on spec quality, not a violation.
 5. Fix the class, not the instance (fix-the-class-not-the-instance
    rule): if the spec fixes a defect in one place and you SEE the
    same thing nearby (another file, an adjacent function, a paired

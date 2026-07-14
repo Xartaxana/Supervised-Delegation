@@ -151,14 +151,13 @@ def test_old_rows_excluded(conn):
     assert digest["per_day"] == []
 
 
-# --- quota_events digest (t-019, sibling of budget_events, D-0043 class,
-# SIBLING_MAP.md axis 2: "enforcement-events Guard <-> Ledger-digest") -----
+# --- quota_events digest (sibling of budget_events; SIBLING_MAP.md) -------
 
 
 def test_daily_digest_survives_missing_quota_events_table(conn):
     # The base `conn` fixture (SCHEMA + EVENTS_SCHEMA only) never creates
-    # quota_events -- the fail-safe case for a DB from before t-018's guard.py
-    # ever ran, mirroring budget_events' OperationalError handling.
+    # quota_events -- the fail-safe case for a DB from before guard.py ever
+    # ran, mirroring budget_events' OperationalError handling.
     seed(conn, "lead", "AB", cost=0.01)
     digest = daily_digest(conn, days=1)
     assert digest["quota_events"] == []
@@ -212,15 +211,16 @@ def test_daily_digest_quota_events_excludes_old_rows(conn):
 
 # --- Phase 2 readiness (Delegated Task 3) ---------------------------------
 
-SHADOW_EVAL_LOG_FIXTURE = """# Delegation Table
+# Mirrors the ACTUAL docs/SHADOW_EVALUATION_LOG.md layout: an H1
+# "# Shadow Evaluation Log" at the top of its own file, not a subsection of
+# a bigger document.
+SHADOW_EVAL_LOG_FIXTURE = """# Shadow Evaluation Log
 
-## Shadow Evaluation Log
-
-- 2026-07-03  category=coding  source=lead-gemini target=intern  n=2  sim=0.10  cost_source=$0.0044 cost_target=$0.0000  -> rejected
-- 2026-07-03  category=coding  source=lead-gemini target=intern  n=4  sim=0.51  judge=middle-groq pass_rate=1.00  cost_source=$0.0023 cost_target=$0.0000  -> validated [RETRACTED]
-- 2026-07-03  category=coding  source=lead-gemini target=intern  n=2  sim=0.08  judge=middle-groq pass_rate=0.50  cost_source=$0.0044 cost_target=$0.0000  -> rejected [OVERRULED, see below]
-- 2026-07-03  category=coding  source=lead-gemini target=middle-groq  n=2  sim=0.25  judge=judge-groq pass_rate=1.00  cost_source=$0.0044 cost_target=$0.0000  -> validated
-- 2026-07-03  category=summarization  source=lead-gemini target=intern  n=2  sim=0.46  judge=middle-groq pass_rate=1.00  cost_source=$0.0016 cost_target=$0.0000  -> validated
+- 2026-01-01  category=coding  source=lead target=builder  n=2  sim=0.10  cost_source=$0.0044 cost_target=$0.0000  -> rejected
+- 2026-01-01  category=coding  source=lead target=builder  n=4  sim=0.50  judge=critic pass_rate=1.00  cost_source=$0.0023 cost_target=$0.0000  -> provisionally_validated [RETRACTED]
+- 2026-01-01  category=coding  source=lead target=builder  n=2  sim=0.08  judge=critic pass_rate=0.50  cost_source=$0.0044 cost_target=$0.0000  -> rejected [OVERRULED, see below]
+- 2026-01-01  category=coding  source=lead target=critic  n=2  sim=0.25  judge=judge pass_rate=1.00  cost_source=$0.0044 cost_target=$0.0000  -> provisionally_validated
+- 2026-01-01  category=summarization  source=lead target=builder  n=2  sim=0.46  judge=critic pass_rate=1.00  cost_source=$0.0016 cost_target=$0.0000  -> provisionally_validated
 """
 
 
@@ -228,74 +228,91 @@ def test_parse_shadow_eval_log_counts_judged_non_retracted_pairs():
     counts = parse_shadow_eval_log(SHADOW_EVAL_LOG_FIXTURE)
     # coding: the difflib-only line (no judge=) is excluded, the [RETRACTED]
     # line is excluded, the [OVERRULED] line IS counted (it was judged), plus
-    # the middle-groq replay line -> 2 runs, 2+2=4 pairs.
+    # the target=critic replay line -> 2 runs, 2+2=4 pairs.
     assert counts["coding"] == {"pairs": 4, "runs": 2}
     assert counts["summarization"] == {"pairs": 2, "runs": 1}
     assert "classification" not in counts
 
 
 def test_parse_shadow_eval_log_empty_when_no_judged_lines():
-    text = "## Shadow Evaluation Log\n\n- 2026-07-03  category=coding  n=2  -> rejected\n"
+    text = "## Shadow Evaluation Log\n\n- 2026-01-01  category=coding  n=2  -> rejected\n"
+    assert parse_shadow_eval_log(text) == {}
+
+
+def test_parse_shadow_eval_log_h1_heading_matches():
+    # The ACTUAL docs/SHADOW_EVALUATION_LOG.md heading is an H1 ("#").
+    text = "# Shadow Evaluation Log\n\n- 2026-01-01  category=coding  n=2  -> rejected\n"
+    assert parse_shadow_eval_log(text) == {}  # no judge=, but header IS found
+
+
+def test_parse_shadow_eval_log_empty_when_header_missing_entirely():
+    # No whole-text fallback: a missing heading means no section at all,
+    # even if judged-looking lines exist in the body.
+    text = (
+        "- 2026-01-01  category=coding  source=lead target=builder"
+        "  n=2  sim=0.10  judge=critic pass_rate=1.00"
+        "  cost_source=$0.0044 cost_target=$0.0000  -> provisionally_validated\n"
+    )
     assert parse_shadow_eval_log(text) == {}
 
 
 def test_phase2_readiness_has_all_ten_criteria(conn, tmp_path):
-    dtable = tmp_path / "DELEGATION_TABLE.md"
-    dtable.write_text(SHADOW_EVAL_LOG_FIXTURE, encoding="utf-8")
-    readiness = phase2_readiness(conn, days=14, delegation_table_path=dtable)
+    shadow_log = tmp_path / "SHADOW_EVALUATION_LOG.md"
+    shadow_log.write_text(SHADOW_EVAL_LOG_FIXTURE, encoding="utf-8")
+    readiness = phase2_readiness(conn, days=14, shadow_log_path=shadow_log)
     assert set(readiness.keys()) == {
         "G1", "G2", "R1", "R2", "R3", "R4", "R5", "C1", "C2", "C3",
     }
 
 
 def test_g2_and_r5_are_manual_check(conn):
-    readiness = phase2_readiness(conn, days=14, delegation_table_path="/does/not/exist.md")
+    readiness = phase2_readiness(conn, days=14, shadow_log_path="/does/not/exist.md")
     assert readiness["G2"]["status"] == "manual_check"
     assert "pointer" in readiness["G2"]
     assert readiness["R5"]["status"] == "manual_check"
     assert "pointer" in readiness["R5"]
 
 
-def test_r2_r3_r4_c3_not_computable_yet_with_needs(conn):
-    readiness = phase2_readiness(conn, days=14, delegation_table_path="/does/not/exist.md")
-    for crit in ("R2", "R3", "R4", "C3"):
+def test_r3_r4_not_computable_yet_with_needs(conn):
+    readiness = phase2_readiness(conn, days=14, shadow_log_path="/does/not/exist.md")
+    for crit in ("R3", "R4"):
         assert readiness[crit]["status"] == "not_computable_yet"
         assert "needs" in readiness[crit]
 
 
-def test_r1_not_computable_when_delegation_table_missing(conn):
-    readiness = phase2_readiness(conn, days=14, delegation_table_path="/does/not/exist.md")
+def test_r1_not_computable_when_shadow_log_missing(conn):
+    readiness = phase2_readiness(conn, days=14, shadow_log_path="/does/not/exist.md")
     assert readiness["R1"]["status"] == "not_computable_yet"
     assert "not found" in readiness["R1"]["needs"]
 
 
 def test_r1_not_met_below_threshold(conn, tmp_path):
-    dtable = tmp_path / "DELEGATION_TABLE.md"
-    dtable.write_text(SHADOW_EVAL_LOG_FIXTURE, encoding="utf-8")
-    readiness = phase2_readiness(conn, days=14, delegation_table_path=dtable)
+    shadow_log = tmp_path / "SHADOW_EVALUATION_LOG.md"
+    shadow_log.write_text(SHADOW_EVAL_LOG_FIXTURE, encoding="utf-8")
+    readiness = phase2_readiness(conn, days=14, shadow_log_path=shadow_log)
     assert readiness["R1"]["status"] == "not_met"
     assert "coding" in readiness["R1"]["detail"]
 
 
 def test_r1_met_when_threshold_reached(conn, tmp_path):
-    lines = ["## Shadow Evaluation Log", ""]
+    lines = ["# Shadow Evaluation Log", ""]
     # 16 judged, non-retracted runs of n=2 -> 32 pairs across 16 runs.
     for _ in range(16):
         lines.append(
-            "- 2026-07-03  category=coding  source=lead-gemini target=intern"
-            "  n=2  sim=0.90  judge=judge-groq pass_rate=1.00"
-            "  cost_source=$0.0044 cost_target=$0.0000  -> validated"
+            "- 2026-01-01  category=coding  source=lead target=builder"
+            "  n=2  sim=0.90  judge=judge pass_rate=1.00"
+            "  cost_source=$0.0044 cost_target=$0.0000  -> provisionally_validated"
         )
-    dtable = tmp_path / "DELEGATION_TABLE.md"
-    dtable.write_text("\n".join(lines), encoding="utf-8")
-    readiness = phase2_readiness(conn, days=14, delegation_table_path=dtable)
+    shadow_log = tmp_path / "SHADOW_EVALUATION_LOG.md"
+    shadow_log.write_text("\n".join(lines), encoding="utf-8")
+    readiness = phase2_readiness(conn, days=14, shadow_log_path=shadow_log)
     assert readiness["R1"]["status"] == "met"
 
 
 def test_g1_not_computable_gracefully_when_cc_usage_absent(conn):
     # The base `conn` fixture has no cc_usage table -- G1 must fall back to
-    # requests-only and say so explicitly (post-spec note in CURRENT_CONTEXT.md).
-    readiness = phase2_readiness(conn, days=14, delegation_table_path="/does/not/exist.md")
+    # requests-only and say so explicitly.
+    readiness = phase2_readiness(conn, days=14, shadow_log_path="/does/not/exist.md")
     assert readiness["G1"]["status"] == "not_met"
     assert "cc_usage table absent" in readiness["G1"]["detail"]
 
@@ -312,7 +329,7 @@ def test_g1_met_counts_requests_and_cc_usage_union(conn):
     # depend on the exact 'now'-vs-SQLite-date('now') boundary).
     for i in range(10, 14):
         seed_cc_usage(conn, "proj", f"sess-{i}", 0, ts=(now - datetime.timedelta(days=i)).isoformat())
-    readiness = phase2_readiness(conn, days=14, delegation_table_path="/does/not/exist.md")
+    readiness = phase2_readiness(conn, days=14, shadow_log_path="/does/not/exist.md")
     assert readiness["G1"]["status"] == "met"
     assert "requests real=10" in readiness["G1"]["detail"]
     assert "cc_usage real=4" in readiness["G1"]["detail"]
@@ -320,14 +337,14 @@ def test_g1_met_counts_requests_and_cc_usage_union(conn):
 
 def test_g1_not_met_when_distinct_days_enough_but_run_broken_by_gap(conn):
     # 14 distinct real-traffic days total, but split into two runs of 7 by a
-    # 2-day gap -- the class-of-bug this task fixes (Task 3 critic finding
-    # 1): distinct-day count alone said "met" here, but no run reaches 14.
+    # 2-day gap: distinct-day count alone would say "met" here, but no run
+    # reaches 14.
     now = datetime.datetime.now()
     for i in list(range(0, 7)) + list(range(9, 16)):
         seed(conn, "lead", f"prompt {i}", ts=(now - datetime.timedelta(days=i)).isoformat())
     conn.execute("UPDATE requests SET traffic_kind = 'real'")
     conn.commit()
-    readiness = phase2_readiness(conn, days=30, delegation_table_path="/does/not/exist.md")
+    readiness = phase2_readiness(conn, days=30, shadow_log_path="/does/not/exist.md")
     assert readiness["G1"]["max_consecutive_days"] == 7
     assert readiness["G1"]["status"] == "not_met"
     assert "14 distinct real-traffic day(s)" in readiness["G1"]["detail"]
@@ -340,7 +357,7 @@ def test_g1_met_when_run_of_14_consecutive_days(conn):
         seed(conn, "lead", f"prompt {i}", ts=(now - datetime.timedelta(days=i)).isoformat())
     conn.execute("UPDATE requests SET traffic_kind = 'real'")
     conn.commit()
-    readiness = phase2_readiness(conn, days=14, delegation_table_path="/does/not/exist.md")
+    readiness = phase2_readiness(conn, days=14, shadow_log_path="/does/not/exist.md")
     assert readiness["G1"]["max_consecutive_days"] == 14
     assert readiness["G1"]["status"] == "met"
 
@@ -354,7 +371,7 @@ def test_g1_max_consecutive_days_ignores_shorter_run_across_a_gap(conn):
         seed(conn, "lead", f"prompt {i}", ts=(now - datetime.timedelta(days=i)).isoformat())
     conn.execute("UPDATE requests SET traffic_kind = 'real'")
     conn.commit()
-    readiness = phase2_readiness(conn, days=30, delegation_table_path="/does/not/exist.md")
+    readiness = phase2_readiness(conn, days=30, shadow_log_path="/does/not/exist.md")
     assert readiness["G1"]["max_consecutive_days"] == 20
     assert readiness["G1"]["status"] == "met"
 
@@ -364,14 +381,14 @@ def test_g1_single_day_of_traffic(conn):
     seed(conn, "lead", "prompt", ts=now.isoformat())
     conn.execute("UPDATE requests SET traffic_kind = 'real'")
     conn.commit()
-    readiness = phase2_readiness(conn, days=14, delegation_table_path="/does/not/exist.md")
+    readiness = phase2_readiness(conn, days=14, shadow_log_path="/does/not/exist.md")
     assert readiness["G1"]["max_consecutive_days"] == 1
     assert readiness["G1"]["status"] == "not_met"
     assert "1 distinct real-traffic day(s)" in readiness["G1"]["detail"]
 
 
 def test_c2_not_computable_when_cc_usage_absent(conn):
-    readiness = phase2_readiness(conn, days=14, delegation_table_path="/does/not/exist.md")
+    readiness = phase2_readiness(conn, days=14, shadow_log_path="/does/not/exist.md")
     assert readiness["C2"]["status"] == "not_computable_yet"
     assert "needs" in readiness["C2"]
 
@@ -380,7 +397,7 @@ def test_c2_met_when_enough_real_sessions(conn):
     for s in range(20):
         for turn in range(5):
             seed_cc_usage(conn, "proj", f"sess-{s}", turn)
-    readiness = phase2_readiness(conn, days=14, delegation_table_path="/does/not/exist.md")
+    readiness = phase2_readiness(conn, days=14, shadow_log_path="/does/not/exist.md")
     assert readiness["C2"]["status"] == "met"
     assert "20 real session" in readiness["C2"]["detail"]
 
@@ -389,7 +406,7 @@ def test_c2_not_met_when_too_few_sessions(conn):
     for s in range(5):
         for turn in range(5):
             seed_cc_usage(conn, "proj", f"sess-{s}", turn)
-    readiness = phase2_readiness(conn, days=14, delegation_table_path="/does/not/exist.md")
+    readiness = phase2_readiness(conn, days=14, shadow_log_path="/does/not/exist.md")
     assert readiness["C2"]["status"] == "not_met"
 
 
@@ -397,22 +414,21 @@ def test_c2_excludes_sidechain_turns(conn):
     # A session with only sidechain (subagent) turns should not count.
     for turn in range(5):
         seed_cc_usage(conn, "proj", "sess-sidechain", turn, is_sidechain=1)
-    readiness = phase2_readiness(conn, days=14, delegation_table_path="/does/not/exist.md")
+    readiness = phase2_readiness(conn, days=14, shadow_log_path="/does/not/exist.md")
     assert readiness["C2"]["status"] == "not_met"
 
 
 def test_c1_not_computable_when_no_real_traffic(conn):
     # NOTE: this fixture's SCHEMA (sqlite_logger.SCHEMA) defaults
-    # traffic_kind to 'real'; the live gateway/requests.db column default is
-    # 'synthetic' (verified via PRAGMA table_info -- see execution report,
-    # this is a pre-existing schema/DB drift, not introduced here). Tag
-    # explicitly as 'synthetic' so this test reflects the "no real traffic"
-    # case regardless of which default is active.
+    # traffic_kind to 'real'; a live gateway/requests.db column default can
+    # instead be 'synthetic' depending on migration history. Tag explicitly
+    # as 'synthetic' so this test reflects the "no real traffic" case
+    # regardless of which default is active.
     seed(conn, "lead", "AB", cost=0.01)
     seed(conn, "lead", "ABCD", cost=0.01)
     conn.execute("UPDATE requests SET traffic_kind = 'synthetic'")
     conn.commit()
-    readiness = phase2_readiness(conn, days=14, delegation_table_path="/does/not/exist.md")
+    readiness = phase2_readiness(conn, days=14, shadow_log_path="/does/not/exist.md")
     assert readiness["C1"]["status"] == "not_computable_yet"
     assert "needs" in readiness["C1"]
 
@@ -422,7 +438,7 @@ def test_c1_met_on_real_traffic_above_threshold(conn):
     seed(conn, "lead", "AAAAAAAAAAAAAAAAAAAA", cost=0.01)  # 20 chars, 10 repeated
     conn.execute("UPDATE requests SET traffic_kind = 'real'")
     conn.commit()
-    readiness = phase2_readiness(conn, days=14, delegation_table_path="/does/not/exist.md")
+    readiness = phase2_readiness(conn, days=14, shadow_log_path="/does/not/exist.md")
     assert readiness["C1"]["status"] == "met"  # 10/20 = 50% >= 40%
 
 
@@ -431,8 +447,118 @@ def test_c1_not_met_below_threshold(conn):
     seed(conn, "lead", "AAAXXXXXXXXXXXXXXXXX", cost=0.01)  # 3/20 = 15% repeated
     conn.execute("UPDATE requests SET traffic_kind = 'real'")
     conn.commit()
-    readiness = phase2_readiness(conn, days=14, delegation_table_path="/does/not/exist.md")
+    readiness = phase2_readiness(conn, days=14, shadow_log_path="/does/not/exist.md")
     assert readiness["C1"]["status"] == "not_met"
+
+
+def seed_categorized(conn, category, cost, prompt="irrelevant prompt text", ts=None):
+    """Insert a real-traffic row with an explicit stored `category` and
+    cost_usd, for R2 readiness tests. category=None leaves the column NULL
+    so categorize() must fall back on the prompt text."""
+    conn.execute(
+        "INSERT INTO requests (ts, model, status, prompt_tokens, completion_tokens,"
+        " cost_usd, latency_ms, prompt, response, category, traffic_kind)"
+        " VALUES (?, 'lead', 'success', 100, 20, ?, 50, ?, 'ok', ?, 'real')",
+        (ts or datetime.datetime.now().isoformat(), cost, prompt, category),
+    )
+    conn.commit()
+
+
+def test_r2_not_met_with_empty_validated_delegable_categories(conn):
+    # This deployment's VALIDATED_DELEGABLE_CATEGORIES starts empty
+    # (populate it as calibration actually validates a category, Update
+    # Rule 1) -- so no amount of real-traffic spend, however concentrated
+    # in one category, can ever read "met" until that set is populated.
+    seed_categorized(conn, "coding", 0.30)
+    readiness = phase2_readiness(conn, days=14, shadow_log_path="/does/not/exist.md")
+    assert readiness["R2"]["status"] == "not_met"
+    assert "0.0%" in readiness["R2"]["detail"]
+    assert "(none yet)" in readiness["R2"]["detail"]
+    assert "coding" in readiness["R2"]["detail"]  # per-category breakdown still visible
+
+
+def test_r2_falls_back_to_categorize_when_stored_category_null(conn):
+    seed_categorized(conn, None, 0.30, prompt="please summarize this document")
+    readiness = phase2_readiness(conn, days=14, shadow_log_path="/does/not/exist.md")
+    # Still not_met (empty validated set), but the categorize() fallback
+    # must have actually run: the heuristic category shows up in the
+    # per-category spend breakdown.
+    assert readiness["R2"]["status"] == "not_met"
+    assert "summarization" in readiness["R2"]["detail"]
+
+
+def test_r2_honest_low_data_when_rows_exist_but_all_zero_cost(conn):
+    # Rows exist, but there is nothing to compute a spend SHARE from.
+    seed_categorized(conn, "coding", 0.0)
+    readiness = phase2_readiness(conn, days=14, shadow_log_path="/does/not/exist.md")
+    assert readiness["R2"]["status"] == "not_computable_yet"
+    assert "1 real row(s)" in readiness["R2"]["needs"]
+    assert "currently 0" not in readiness["R2"]["needs"]
+
+
+def test_r2_not_computable_when_no_real_rows(conn):
+    readiness = phase2_readiness(conn, days=14, shadow_log_path="/does/not/exist.md")
+    assert readiness["R2"]["status"] == "not_computable_yet"
+    assert "needs" in readiness["R2"]
+
+
+def seed_cache_real(conn, prompt_tokens, cache_read, cache_creation, ts=None):
+    """Insert a real-traffic row with explicit cache-token columns, for C3
+    readiness tests."""
+    conn.execute(
+        "INSERT INTO requests (ts, model, status, prompt_tokens, completion_tokens,"
+        " cost_usd, latency_ms, prompt, response,"
+        " cache_read_input_tokens, cache_creation_input_tokens, traffic_kind)"
+        " VALUES (?, 'opus', 'success', ?, 10, 0.01, 50, 'x', 'ok', ?, ?, 'real')",
+        (ts or datetime.datetime.now().isoformat(), prompt_tokens, cache_read, cache_creation),
+    )
+    conn.commit()
+
+
+def test_c3_not_met_cache_aware_low_uncached_share(conn):
+    # Live-shape row: prompt_tokens is INCLUSIVE of both cache columns, so
+    # uncached = prompt - read - creation is tiny relative to the input side.
+    seed_cache_real(conn, prompt_tokens=63423, cache_read=61541, cache_creation=1880)
+    readiness = phase2_readiness(conn, days=14, shadow_log_path="/does/not/exist.md")
+    uncached = 63423 - 61541 - 1880  # = 2
+    ratio = uncached / 63423
+    assert ratio < 0.25
+    assert readiness["C3"]["status"] == "not_met"
+    assert f"{uncached} of 63423" in readiness["C3"]["detail"]
+
+
+def test_c3_met_when_uncached_share_above_threshold(conn):
+    seed_cache_real(conn, prompt_tokens=100, cache_read=10, cache_creation=10)  # 80% uncached
+    readiness = phase2_readiness(conn, days=14, shadow_log_path="/does/not/exist.md")
+    assert readiness["C3"]["status"] == "met"
+
+
+def test_c3_honest_low_data_when_rows_exist_but_zero_prompt_tokens(conn):
+    seed_cache_real(conn, prompt_tokens=0, cache_read=0, cache_creation=0)
+    readiness = phase2_readiness(conn, days=14, shadow_log_path="/does/not/exist.md")
+    assert readiness["C3"]["status"] == "not_computable_yet"
+    assert "1 real row(s)" in readiness["C3"]["needs"]
+    assert "currently 0" not in readiness["C3"]["needs"]
+
+
+def test_c3_regression_pin_matches_gate_report_shape(conn):
+    """Regression pin: shape approximating a real gate report -- truly-
+    uncached ~0.11% of the input side, at cache_read ~96.1% / cache_creation
+    ~3.8%."""
+    seed_cache_real(
+        conn, prompt_tokens=27_589_350, cache_read=26_510_000, cache_creation=1_050_000,
+    )
+    readiness = phase2_readiness(conn, days=14, shadow_log_path="/does/not/exist.md")
+    uncached = 27_589_350 - 26_510_000 - 1_050_000  # 29,350
+    ratio = uncached / 27_589_350
+    assert ratio == pytest.approx(0.0011, abs=0.0001)
+    assert readiness["C3"]["status"] == "not_met"
+
+
+def test_c3_not_computable_when_no_real_rows(conn):
+    readiness = phase2_readiness(conn, days=14, shadow_log_path="/does/not/exist.md")
+    assert readiness["C3"]["status"] == "not_computable_yet"
+    assert "needs" in readiness["C3"]
 
 
 def test_format_phase2_line_vocabulary():
@@ -447,9 +573,131 @@ def test_format_phase2_line_vocabulary():
 
 
 def test_daily_digest_carries_phase2_readiness(conn, tmp_path):
-    dtable = tmp_path / "DELEGATION_TABLE.md"
-    dtable.write_text(SHADOW_EVAL_LOG_FIXTURE, encoding="utf-8")
+    shadow_log = tmp_path / "SHADOW_EVALUATION_LOG.md"
+    shadow_log.write_text(SHADOW_EVAL_LOG_FIXTURE, encoding="utf-8")
     seed(conn, "lead", "AB", cost=0.01)
-    digest = daily_digest(conn, days=14, delegation_table_path=dtable)
+    digest = daily_digest(conn, days=14, shadow_log_path=shadow_log)
     assert "phase2_readiness" in digest
     assert digest["phase2_readiness"]["G2"]["status"] == "manual_check"
+
+
+# --- cache token columns in daily_digest -----------------------------------
+
+
+def seed_with_cache(conn, model, prompt, prompt_tokens=100,
+                    cache_read=0, cache_creation=0, ts=None):
+    """Insert a request row with explicit cache token counts."""
+    conn.execute(
+        "INSERT INTO requests (ts, model, status, prompt_tokens, completion_tokens,"
+        " cost_usd, latency_ms, prompt, response,"
+        " cache_read_input_tokens, cache_creation_input_tokens)"
+        " VALUES (?, ?, 'success', ?, 10, 0.01, 50, ?, 'ok', ?, ?)",
+        (
+            ts or datetime.datetime.now().isoformat(),
+            model, prompt_tokens, prompt, cache_read, cache_creation,
+        ),
+    )
+    conn.commit()
+
+
+def test_daily_digest_cache_aggregation(conn):
+    # Two requests with cache activity, one without (NULL -> treated as 0).
+    seed_with_cache(conn, "sonnet", "prompt A", prompt_tokens=200,
+                    cache_read=80, cache_creation=40)
+    seed_with_cache(conn, "sonnet", "prompt B", prompt_tokens=100,
+                    cache_read=60, cache_creation=0)
+    seed(conn, "sonnet", "prompt C", tokens=(50, 5))  # no cache columns -> NULL
+
+    digest = daily_digest(conn, days=1)
+    (row,) = digest["per_day"]
+
+    assert row["cache_read_tokens"] == 140        # 80 + 60 + 0
+    assert row["cache_creation_tokens"] == 40     # 40 + 0 + 0
+    # cache_read_share = 140 / 350 = 0.4. Denominator is prompt_tokens
+    # ALONE: litellm's prompt_tokens in requests.db is the FULL input side,
+    # already including the cache counters (verified on live rows) --
+    # summing them on top double-counts.
+    total_prompt = row["prompt_tokens"]           # 200 + 100 + 50 = 350
+    expected_share = round(140 / total_prompt, 4)
+    assert row["cache_read_share"] == pytest.approx(expected_share)
+
+
+def test_daily_digest_cache_share_zero_when_no_prompt_tokens(conn):
+    # Edge: all prompt_tokens are 0 AND no cache reads -> denominator is 0,
+    # share must be 0.0, not a ZeroDivisionError.
+    conn.execute(
+        "INSERT INTO requests (ts, model, status, prompt_tokens, completion_tokens,"
+        " cost_usd, latency_ms, prompt, response,"
+        " cache_read_input_tokens, cache_creation_input_tokens)"
+        " VALUES (datetime('now'), 'sonnet', 'success', 0, 0, 0.0, 10, 'x', 'y', 0, 0)"
+    )
+    conn.commit()
+    digest = daily_digest(conn, days=1)
+    (row,) = digest["per_day"]
+    assert row["cache_read_share"] == 0.0
+
+
+def test_daily_digest_cache_text_format(conn):
+    seed_with_cache(conn, "sonnet", "prompt X", prompt_tokens=400,
+                    cache_read=100, cache_creation=50)
+    digest = daily_digest(conn, days=1)
+    text = format_digest(digest)
+    # Cache sub-line must appear after the main per-day line.
+    assert "cache: read=100 creation=50" in text
+    # cache_read_share = 100/400 = 25.0% (:.1% format); prompt_tokens is
+    # the full input side, so it is the denominator by itself.
+    assert "cache_read_share=25.0%" in text
+
+
+def test_daily_digest_cache_share_live_traffic_shape(conn):
+    # Regression pin: a row shaped like live API-window traffic
+    # (prompt_tokens is the full input side, cache_read is almost all of
+    # it). A double-counting denominator would give ~0.49 here; the true
+    # share is ~0.97.
+    seed_with_cache(conn, "opus", "live-shape", prompt_tokens=63423,
+                    cache_read=61541, cache_creation=1880)
+    digest = daily_digest(conn, days=1)
+    (row,) = digest["per_day"]
+    assert row["cache_read_share"] == pytest.approx(round(61541 / 63423, 4))
+    assert row["cache_read_share"] > 0.9  # the double-count bug can't pass this
+
+
+def test_categories_heuristic_stored_category_preferred(conn):
+    """categories_heuristic must use the stored category column when non-NULL,
+    falling back to categorize() only for rows where category IS NULL."""
+    # Row 1: prompt would fire 'formatting' heuristic, but stored category = 'coding'
+    conn.execute(
+        "INSERT INTO requests (ts, model, status, prompt_tokens, completion_tokens,"
+        " cost_usd, latency_ms, prompt, response, category)"
+        " VALUES (datetime('now'), 'lead', 'success', 10, 5, 0.01, 100,"
+        " 'format this markdown table', 'ok', 'coding')"
+    )
+    # Row 2: no stored category (NULL) -> heuristic applies, prompt = 'summarize this'
+    conn.execute(
+        "INSERT INTO requests (ts, model, status, prompt_tokens, completion_tokens,"
+        " cost_usd, latency_ms, prompt, response, category)"
+        " VALUES (datetime('now'), 'lead', 'success', 10, 5, 0.01, 100,"
+        " 'summarize this article', 'ok', NULL)"
+    )
+    conn.commit()
+
+    digest = daily_digest(conn, days=1)
+    cats = digest["categories_heuristic"]
+    # stored 'coding' beats the 'formatting' needle in row 1
+    assert "coding" in cats
+    assert cats["coding"]["requests"] == 1
+    # 'formatting' must NOT appear (no row ended up there)
+    assert "formatting" not in cats
+    # row 2 has no stored category, heuristic fires 'summarization'
+    assert "summarization" in cats
+    assert cats["summarization"]["requests"] == 1
+
+
+def test_daily_digest_cache_null_rows_treated_as_zero(conn):
+    # seed() does not set cache columns -> they are NULL in the DB.
+    seed(conn, "lead", "prompt", tokens=(200, 30))
+    digest = daily_digest(conn, days=1)
+    (row,) = digest["per_day"]
+    assert row["cache_read_tokens"] == 0
+    assert row["cache_creation_tokens"] == 0
+    assert row["cache_read_share"] == 0.0

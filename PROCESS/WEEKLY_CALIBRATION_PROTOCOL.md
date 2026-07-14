@@ -159,7 +159,13 @@ for the period, and diffs to DECISIONS.md.
     counting script's constants in sync with the journal validator.
     (d) A systematic `failure_class=spec` for a tier signals
     dispatches with no DoD; check the Lead's recent specs for
-    acceptance criteria plus a verification run.
+    acceptance criteria plus a verification run AND for the context
+    manifest (a writing dispatch with no "given"/"owns" is a leak of
+    the dispatch-context-manifest rule); a systematic
+    `failure_class=recon` on builder signals an insufficient "given"
+    basket; "needed beyond the manifest" report lines are direct
+    telemetry of the same (piling up → the Lead's baskets are
+    systematically thin).
     (e) Task_id integrity: no duplicate task_ids between unrelated
     tasks, across every journal you run. A known-duplicate id
     recorded in the journal counts as TWO tasks in every check-3/13
@@ -182,7 +188,32 @@ for the period, and diffs to DECISIONS.md.
     `rejected`/`failure_class=tooling` from a provider quota error
     while `tools/preflight_quota.py` exists means either something
     bypassed the script, or the script's own math has a leak — work
-    out which.
+    out which. The hook's MODEL line is a harness-supplied
+    declaration, not a measurement, and its wording says so: liveness
+    also includes a "declared by harness, not measured" marker on
+    that line — the marker disappearing after a hook edit is a
+    regression. Reconciling the actual tier against reality is check
+    5's job; this subcheck only verifies the declaration's wording
+    stays honest.
+    (h) traffic_kind honesty: a spot-scan of the window's requests for
+    the signature of an unmarked generator — a multi-alias batch in a
+    single tick (several models sharing a millisecond-precision ts)
+    AND/OR tiny token counts (total < ~100) carrying
+    traffic_kind='real'. Found → identify the generator, add a
+    self-tag, and correct the mistagged rows loudly by an explicit
+    Lead decision (rows named + rationale); a silent after-the-fact
+    correction with no commit/journal record is itself a violation of
+    this check.
+    (i) Phantom dispatches: an open `delegated` window (the task_id's
+    last lifecycle event is `delegated`, with no matching
+    accepted/rejected/escalated) that outlives the session that opened
+    it is a phantom candidate — reconcile its `worker_ref` against
+    transcripts / the task list (did the worker actually exist?); a
+    `delegated` line with no `worker_ref` once the field is
+    validator-enforced is itself a violation (the validator should
+    have blocked it — something bypassed the commit-time gate);
+    spot-check 1–2 window `worker_ref` values against a real worker (a
+    sidechain transcript, a job log).
 14. **A golden set for recon, and a regression rule for prompt
     edits.** (a) Git log for the window on `.claude/agents/*.md`:
     every edit to a tier's role file that has an exam set (scout —

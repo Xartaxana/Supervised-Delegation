@@ -60,8 +60,11 @@ log" section):
     field in {"critic", "queued-to-lead"}. Read literally, the spec
     requires the tier/basis check only for accepted, not rejected --
     rejected just carries "by" with no further check.
+12. Every NEW delegated line carries worker_ref -- a non-empty handle
+    by which the next session finds the worker/result; catches a
+    phantom delegated whose worker was never launched.
 
-12. Any FAIL -> exit 1, with the line number, event/task_id, and which
+13. Any FAIL -> exit 1, with the line number, event/task_id, and which
     check failed, for every violating line. A validator crash (an
     exception, not a validation FAIL) -> exit 2 with a traceback
     (fail-closed, same as mechanism_gate; see main()).
@@ -298,6 +301,13 @@ def validate_new_lines(new_lines: list[str], head_lines: list[str],
             witness = obj.get("witness")
             if not isinstance(witness, str) or not witness.strip():
                 violations.append(f"{tag}: 'witness' is required (non-empty string) for accepted+agent=builder")
+
+        if event == "delegated":
+            worker_ref = obj.get("worker_ref")
+            if not isinstance(worker_ref, str) or not worker_ref.strip():
+                violations.append(
+                    f"{tag}: 'worker_ref' is required (non-empty string) for delegated"
+                )
 
         if event == "defect_found":
             ref = obj.get("ref")

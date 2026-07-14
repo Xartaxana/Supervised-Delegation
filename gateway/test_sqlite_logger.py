@@ -114,6 +114,161 @@ def test_metadata_traffic_kind_is_logged(db, kind):
     assert row["traffic_kind"] == kind
 
 
+def test_migration_adds_cache_token_columns(db):
+    """A database that has traffic_kind but no cache columns gets the two
+    nullable cache-token columns added on the next _connect(), without
+    disturbing existing rows."""
+    from sqlite_logger import _connect
+
+    pre_cache_schema = """
+    CREATE TABLE requests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts TEXT NOT NULL,
+        model TEXT,
+        provider_model TEXT,
+        status TEXT NOT NULL,
+        latency_ms REAL,
+        prompt_tokens INTEGER,
+        completion_tokens INTEGER,
+        total_tokens INTEGER,
+        cost_usd REAL,
+        prompt TEXT,
+        response TEXT,
+        error TEXT,
+        traffic_kind TEXT NOT NULL DEFAULT 'real'
+    );
+    """
+    conn = sqlite3.connect(db)
+    conn.execute(pre_cache_schema)
+    conn.execute(
+        "INSERT INTO requests (ts, status, prompt, response, traffic_kind)"
+        " VALUES (?, ?, ?, ?, ?)",
+        ("2026-01-01T00:00:00", "success", "hi", "hello", "real"),
+    )
+    conn.commit()
+    conn.close()
+
+    migrated = _connect()
+    columns = {row[1] for row in migrated.execute("PRAGMA table_info(requests)")}
+    assert "cache_creation_input_tokens" in columns
+    assert "cache_read_input_tokens" in columns
+
+    rows = migrated.execute(
+        "SELECT prompt, cache_creation_input_tokens, cache_read_input_tokens"
+        " FROM requests ORDER BY id"
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0][0] == "hi"
+    assert rows[0][1] is None
+    assert rows[0][2] is None
+
+
+def test_migration_from_pre_traffic_kind_db_also_adds_cache_columns(db):
+    """A database that predates BOTH migrations (no traffic_kind, no
+    cache columns) ends up with all of them after one _connect()."""
+    from sqlite_logger import _connect
+
+    ancient_schema = """
+    CREATE TABLE requests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts TEXT NOT NULL,
+        model TEXT,
+        provider_model TEXT,
+        status TEXT NOT NULL,
+        latency_ms REAL,
+        prompt_tokens INTEGER,
+        completion_tokens INTEGER,
+        total_tokens INTEGER,
+        cost_usd REAL,
+        prompt TEXT,
+        response TEXT,
+        error TEXT
+    );
+    """
+    conn = sqlite3.connect(db)
+    conn.execute(ancient_schema)
+    conn.execute(
+        "INSERT INTO requests (ts, status, prompt, response) VALUES (?, ?, ?, ?)",
+        ("2026-01-01T00:00:00", "success", "hi", "hello"),
+    )
+    conn.commit()
+    conn.close()
+
+    migrated = _connect()
+    columns = {row[1] for row in migrated.execute("PRAGMA table_info(requests)")}
+    assert "traffic_kind" in columns
+    assert "cache_creation_input_tokens" in columns
+    assert "cache_read_input_tokens" in columns
+
+
+def test_success_row_fills_cache_tokens_from_usage(db):
+    """A response_obj carrying an Anthropic-shaped Usage (as litellm
+    builds it from cache_creation_input_tokens / cache_read_input_tokens
+    kwargs, verified empirically -- see sqlite_logger._cache_tokens) logs
+    those counts into the new columns."""
+    from litellm.types.utils import ModelResponse, Usage
+
+    from sqlite_logger import logger_instance
+
+    usage = Usage(
+        prompt_tokens=100,
+        completion_tokens=50,
+        total_tokens=150,
+        cache_creation_input_tokens=20,
+        cache_read_input_tokens=30,
+    )
+    response_obj = ModelResponse(
+        choices=[{"message": {"role": "assistant", "content": "hi there"}}],
+        usage=usage,
+    )
+    kwargs = {
+        "model": "claude-sonnet-5",
+        "messages": [{"role": "user", "content": "ping"}],
+        "litellm_params": {"metadata": {}},
+        "response_cost": 0.001,
+    }
+    import datetime
+
+    now = datetime.datetime.now()
+    logger_instance.log_success_event(kwargs, response_obj, now, now)
+
+    conn = sqlite3.connect(db)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM requests WHERE status = 'success'").fetchone()
+    assert row["cache_creation_input_tokens"] == 20
+    assert row["cache_read_input_tokens"] == 30
+
+
+def test_success_row_defaults_cache_tokens_to_null_without_usage_fields(db):
+    """A response with a plain (non-Anthropic) usage object -- no cache
+    fields at all -- must log NULL for both columns, not raise."""
+    from litellm.types.utils import ModelResponse, Usage
+
+    from sqlite_logger import logger_instance
+
+    usage = Usage(prompt_tokens=10, completion_tokens=5, total_tokens=15)
+    response_obj = ModelResponse(
+        choices=[{"message": {"role": "assistant", "content": "pong"}}],
+        usage=usage,
+    )
+    kwargs = {
+        "model": "gpt-3.5-turbo",
+        "messages": [{"role": "user", "content": "ping"}],
+        "litellm_params": {"metadata": {}},
+        "response_cost": 0.0001,
+    }
+    import datetime
+
+    now = datetime.datetime.now()
+    logger_instance.log_success_event(kwargs, response_obj, now, now)
+
+    conn = sqlite3.connect(db)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM requests WHERE status = 'success'").fetchone()
+    assert row["cache_creation_input_tokens"] is None
+    assert row["cache_read_input_tokens"] is None
+
+
 def test_migration_adds_column_and_backfills_existing_rows(db):
     from sqlite_logger import _connect
 
@@ -154,3 +309,102 @@ def test_migration_adds_column_and_backfills_existing_rows(db):
     assert len(rows) == 2
     assert rows[0][1] == "synthetic"
     assert rows[1][1] == "judge"
+
+
+def test_migration_adds_category_column(db):
+    """A database that has traffic_kind and cache columns but no category
+    column gets the column added without losing existing rows."""
+    from sqlite_logger import _connect
+
+    pre_category_schema = """
+    CREATE TABLE requests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts TEXT NOT NULL,
+        model TEXT,
+        provider_model TEXT,
+        status TEXT NOT NULL,
+        latency_ms REAL,
+        prompt_tokens INTEGER,
+        completion_tokens INTEGER,
+        total_tokens INTEGER,
+        cost_usd REAL,
+        prompt TEXT,
+        response TEXT,
+        error TEXT,
+        traffic_kind TEXT NOT NULL DEFAULT 'real',
+        cache_creation_input_tokens INTEGER,
+        cache_read_input_tokens INTEGER
+    );
+    """
+    conn = sqlite3.connect(db)
+    conn.execute(pre_category_schema)
+    conn.execute(
+        "INSERT INTO requests (ts, status, prompt, response, traffic_kind)"
+        " VALUES (?, ?, ?, ?, ?)",
+        ("2026-01-01T00:00:00", "success", "hi", "hello", "real"),
+    )
+    conn.commit()
+    conn.close()
+
+    migrated = _connect()
+    columns = {row[1] for row in migrated.execute("PRAGMA table_info(requests)")}
+    assert "category" in columns
+
+    rows = migrated.execute(
+        "SELECT prompt, category FROM requests ORDER BY id"
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0][0] == "hi"
+    assert rows[0][1] is None   # pre-existing row: NULL (no backfill needed)
+
+
+def test_metadata_category_is_logged(db):
+    """metadata.category from a litellm call reaches the category column."""
+    from litellm.types.utils import ModelResponse, Usage
+    from sqlite_logger import logger_instance
+
+    usage = Usage(prompt_tokens=10, completion_tokens=5, total_tokens=15)
+    response_obj = ModelResponse(
+        choices=[{"message": {"role": "assistant", "content": "pong"}}],
+        usage=usage,
+    )
+    kwargs = {
+        "model": "gpt-3.5-turbo",
+        "messages": [{"role": "user", "content": "def foo(): ..."}],
+        "litellm_params": {"metadata": {"category": "coding"}},
+        "response_cost": 0.0001,
+    }
+    import datetime
+    now = datetime.datetime.now()
+    logger_instance.log_success_event(kwargs, response_obj, now, now)
+
+    conn = sqlite3.connect(db)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM requests WHERE status = 'success'").fetchone()
+    assert row["category"] == "coding"
+
+
+def test_metadata_category_null_when_not_provided(db):
+    """Without metadata.category the column stays NULL."""
+    from litellm.types.utils import ModelResponse, Usage
+    from sqlite_logger import logger_instance
+
+    usage = Usage(prompt_tokens=10, completion_tokens=5, total_tokens=15)
+    response_obj = ModelResponse(
+        choices=[{"message": {"role": "assistant", "content": "pong"}}],
+        usage=usage,
+    )
+    kwargs = {
+        "model": "gpt-3.5-turbo",
+        "messages": [{"role": "user", "content": "ping"}],
+        "litellm_params": {"metadata": {}},
+        "response_cost": 0.0001,
+    }
+    import datetime
+    now = datetime.datetime.now()
+    logger_instance.log_success_event(kwargs, response_obj, now, now)
+
+    conn = sqlite3.connect(db)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM requests WHERE status = 'success'").fetchone()
+    assert row["category"] is None

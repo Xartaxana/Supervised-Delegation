@@ -136,8 +136,9 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Savings/trend report (calibration check 18)")
     ap.add_argument("--db", default=str(Path(__file__).resolve().parent.parent
                                         / "gateway" / "requests.db"))
-    ap.add_argument("--routed-start", default="2026-07-08",
-                    help="the PRE/ROUTED boundary (when routing was deployed on this repo)")
+    ap.add_argument("--routed-start", required=True,
+                    help="the PRE/ROUTED boundary: the date routing was deployed"
+                         " on YOUR repo (YYYY-MM-DD)")
     ap.add_argument("--until", default=None,
                     help="upper bound of the ROUTED window (for reproducible slices)")
     args = ap.parse_args(argv)

@@ -1,4 +1,4 @@
-"""Tests for tools/journal_validator.py (t-031). Style mirrors
+"""Tests for tools/journal_validator.py. Style mirrors
 tools/test_mechanism_gate.py: decide() is a pure function, tested
 directly with synthetic staged/head text -- no git needed for most
 cases. One integration test at the bottom exercises the real git
@@ -19,8 +19,10 @@ NOW = jv.datetime.datetime(2026, 7, 10, 12, 0, 0)
 
 
 def _line(event="delegated", ts="2026-07-10T08:00:00", agent="builder",
-          category="implementation", notes="note", **kw) -> str:
-    obj = {"ts": ts, "event": event, "agent": agent, "category": category, "notes": notes}
+          category="implementation", notes="note",
+          worker_ref="cli:2026-07-10T08:00:00", **kw) -> str:
+    obj = {"ts": ts, "event": event, "agent": agent, "category": category, "notes": notes,
+           "worker_ref": worker_ref}
     obj.update(kw)
     return json.dumps(obj, ensure_ascii=False)
 
@@ -124,6 +126,59 @@ def test_task_id_bad_format_fails():
     assert any("t-NNN format" in v for v in violations)
 
 
+# ---- 5b. worker_ref required for delegated ----
+
+def test_delegated_missing_worker_ref_fails():
+    obj = json.loads(_line(event="delegated", ts="2026-07-10T08:10:00", model="sonnet",
+                            task_id="t-002", notes="no worker_ref"))
+    del obj["worker_ref"]
+    staged = _staged(json.dumps(obj, ensure_ascii=False))
+    code, violations = jv.decide(staged, HEAD_TEXT, NOW)
+    assert code == 1
+    assert any("worker_ref" in v for v in violations)
+
+
+def test_delegated_empty_worker_ref_fails():
+    staged = _staged(_line(event="delegated", ts="2026-07-10T08:10:00", model="sonnet",
+                            task_id="t-002", worker_ref="", notes="empty worker_ref"))
+    code, violations = jv.decide(staged, HEAD_TEXT, NOW)
+    assert code == 1
+    assert any("worker_ref" in v for v in violations)
+
+
+def test_delegated_whitespace_worker_ref_fails():
+    staged = _staged(_line(event="delegated", ts="2026-07-10T08:10:00", model="sonnet",
+                            task_id="t-002", worker_ref="   ", notes="whitespace worker_ref"))
+    code, violations = jv.decide(staged, HEAD_TEXT, NOW)
+    assert code == 1
+    assert any("worker_ref" in v for v in violations)
+
+
+def test_delegated_nonstring_worker_ref_fails():
+    staged = _staged(_line(event="delegated", ts="2026-07-10T08:10:00", model="sonnet",
+                            task_id="t-002", worker_ref=123, notes="nonstring worker_ref"))
+    code, violations = jv.decide(staged, HEAD_TEXT, NOW)
+    assert code == 1
+    assert any("worker_ref" in v for v in violations)
+
+
+def test_delegated_valid_worker_ref_passes():
+    staged = _staged(_line(event="delegated", ts="2026-07-10T08:10:00", model="sonnet",
+                            task_id="t-002", worker_ref="cli:2026-07-10T08:10:00",
+                            notes="valid worker_ref"))
+    code, violations = jv.decide(staged, HEAD_TEXT, NOW)
+    assert code == 0
+
+
+def test_escalated_needs_no_worker_ref():
+    obj = json.loads(_line(event="escalated", ts="2026-07-10T08:10:00", agent="builder",
+                            model="sonnet", task_id="t-001", notes="escalated, no worker_ref"))
+    del obj["worker_ref"]
+    staged = _staged(json.dumps(obj, ensure_ascii=False))
+    code, violations = jv.decide(staged, HEAD_TEXT, NOW)
+    assert code == 0
+
+
 # ---- 6. rejected: attempt / failure_class ----
 
 def test_rejected_invalid_attempt_and_failure_class_fail():
@@ -198,7 +253,8 @@ def test_accepted_can_reference_task_id_delegated_earlier_in_same_commit():
 
 
 # ---- 9 (Lead correction, live precedent): re-delegated task_id --
-# a/b/v legal, two g negatives (t-029 dup pattern; delegated after accepted) ----
+# a/b/v legal, two g negatives (a real duplicate-delegation defect once
+# found in a production journal; delegated after accepted) ----
 
 def test_9a_new_task_max_plus_one_passes():
     # (a) restated for clarity alongside b/v/g below: a brand-new task_id
@@ -213,7 +269,8 @@ def test_9b_continuation_dispatch_different_agent_passes():
     # (b) t-001 delegated to builder in HEAD; task is still open (no
     # accepted yet); a NEW delegated on the SAME task_id but a DIFFERENT
     # agent (critic acceptance-gate entry) is legal with no attempt/
-    # rejected needed -- exactly the t-027 precedent (builder then critic).
+    # rejected needed -- exactly the pattern a real critic-gate
+    # continuation dispatch needs (builder then critic).
     staged = _staged(_line(event="delegated", ts="2026-07-10T08:10:00", agent="critic",
                             model="opus", task_id="t-001",
                             notes="critic-gate continuation dispatch, case b"))
@@ -234,11 +291,12 @@ def test_9v_retry_after_rejected_with_attempt_passes():
     assert code == 0
 
 
-def test_9g_duplicate_pattern_t029_same_agent_no_attempt_no_rejected_fails():
-    # (g) negative #1: the actual t-029 defect -- same agent re-delegated
+def test_9g_duplicate_pattern_same_agent_no_attempt_no_rejected_fails():
+    # (g) negative #1: an actual defect once found in a production
+    # journal -- same agent re-delegated
     # on an open task_id, no attempt field, no rejected above. Must FAIL.
     staged = _staged(_line(event="delegated", ts="2026-07-10T08:10:00", agent="builder",
-                            model="sonnet", task_id="t-001", notes="t-029-class duplicate"))
+                            model="sonnet", task_id="t-001", notes="duplicate delegation, no attempt/rejected"))
     code, violations = jv.decide(staged, HEAD_TEXT, NOW)
     assert code == 1
     assert any("forbidden duplicate" in v for v in violations)

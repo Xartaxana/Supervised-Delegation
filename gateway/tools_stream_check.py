@@ -1,18 +1,18 @@
-"""Isolation script for t-013: does the litellm proxy forward structured
+"""Isolation script: does the litellm proxy forward structured
 tool_calls for a given model, in streaming and non-streaming mode?
 
-Persistent (unlike the session-scratchpad tools_pipe_test.py from t-012)
-so future sessions can re-run it without recreating it. Isolates the
-groq-streaming tool-call break recorded in PI_HARNESS.md "Known
-breaks" #1 (t-013 verdict: NOT reproduced on litellm 1.90.2).
+Persistent (unlike a one-off session-scratchpad script) so future
+sessions can re-run it without recreating it. Isolates the
+groq-streaming tool-call break recorded in PI_HARNESS.md "Known gaps
+and recipes" (verdict: NOT reproduced on litellm 1.90.2).
 Named *_check.py, not *_test.py, to stay out of the pytest glob
-(critic t-013, F3).
+(same convention as regression_runner.py).
 
 Usage:
-    python tools_stream_check.py --model middle-groq --stream
-    python tools_stream_check.py --model middle-groq --no-stream
-    python tools_stream_check.py --model builder-groq --stream
-    python tools_stream_check.py --model intern --stream
+    python tools_stream_check.py --model builder --stream
+    python tools_stream_check.py --model builder --no-stream
+    python tools_stream_check.py --model scout --stream
+    python tools_stream_check.py --model analyst --stream
 
 Exit code 0 if a structured tool_call was observed, 1 otherwise.
 Talks to the proxy at http://localhost:4000 (override with --base-url).

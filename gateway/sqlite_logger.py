@@ -30,7 +30,10 @@ CREATE TABLE IF NOT EXISTS requests (
     prompt TEXT,
     response TEXT,
     error TEXT,
-    traffic_kind TEXT NOT NULL DEFAULT 'real'
+    traffic_kind TEXT NOT NULL DEFAULT 'real',
+    cache_creation_input_tokens INTEGER,
+    cache_read_input_tokens INTEGER,
+    category TEXT
 );
 """
 
@@ -69,6 +72,23 @@ def _connect() -> sqlite3.Connection:
             "UPDATE requests SET traffic_kind = 'judge'"
             " WHERE prompt LIKE '%impartial judge comparing two answers%'"
         )
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(requests)")}
+    # Cache-token columns (prompt-cache columns): added independently of
+    # the traffic_kind migration above so a DB that already has
+    # traffic_kind (post earlier migration) but predates this change still
+    # gets them. Nullable: pre-migration rows and non-Anthropic traffic
+    # never populate them.
+    if "cache_creation_input_tokens" not in columns:
+        conn.execute("ALTER TABLE requests ADD COLUMN cache_creation_input_tokens INTEGER")
+    if "cache_read_input_tokens" not in columns:
+        conn.execute("ALTER TABLE requests ADD COLUMN cache_read_input_tokens INTEGER")
+    # category column (ground-truth category column): ground-truth category
+    # from regression set or any caller that tags metadata.category; NULL
+    # for untagged traffic. Added independently of prior migrations so a DB
+    # that already has all earlier columns but predates this change still
+    # gets it.
+    if "category" not in columns:
+        conn.execute("ALTER TABLE requests ADD COLUMN category TEXT")
     return conn
 
 
@@ -97,13 +117,45 @@ def _base_row(kwargs, start_time, end_time) -> dict:
         else None,
         "prompt": json.dumps(messages, ensure_ascii=False) if messages else None,
         "traffic_kind": metadata.get("traffic_kind") or "real",
+        "category": metadata.get("category"),
     }
+
+
+def _cache_tokens(usage) -> tuple:
+    """Extract Anthropic prompt-cache token counts from a litellm Usage
+    object.
+
+    litellm.types.utils.Usage.__init__ maps the Anthropic response
+    fields ``cache_creation_input_tokens`` / ``cache_read_input_tokens``
+    onto the Usage object THREE ways -- as direct same-named attributes
+    (via its trailing ``for k, v in params.items(): setattr(self, k, v)``),
+    as underscore-prefixed ``_cache_creation_input_tokens`` /
+    ``_cache_read_input_tokens``, and inside
+    ``usage.prompt_tokens_details.cache_creation_tokens`` /
+    ``.cached_tokens``. The direct attribute is used first since it
+    matches the field names this column pair is named after; the
+    prompt_tokens_details path is the fallback for any usage object
+    that only got constructed with that field populated. Non-Anthropic
+    responses (mock, Groq, Gemini, Ollama) carry neither -- getattr's
+    None default keeps this a no-op for them, not a crash.
+    """
+    if usage is None:
+        return None, None
+    details = getattr(usage, "prompt_tokens_details", None)
+    creation = getattr(usage, "cache_creation_input_tokens", None)
+    if creation is None:
+        creation = getattr(details, "cache_creation_tokens", None)
+    read = getattr(usage, "cache_read_input_tokens", None)
+    if read is None:
+        read = getattr(details, "cached_tokens", None)
+    return creation, read
 
 
 def _success_row(kwargs, response_obj, start_time, end_time) -> dict:
     row = _base_row(kwargs, start_time, end_time)
     usage = getattr(response_obj, "usage", None)
     choices = getattr(response_obj, "choices", None)
+    cache_creation, cache_read = _cache_tokens(usage)
     row.update(
         {
             "status": "success",
@@ -112,6 +164,8 @@ def _success_row(kwargs, response_obj, start_time, end_time) -> dict:
             "total_tokens": getattr(usage, "total_tokens", None),
             "cost_usd": kwargs.get("response_cost"),
             "response": choices[0].message.content if choices else None,
+            "cache_creation_input_tokens": cache_creation,
+            "cache_read_input_tokens": cache_read,
         }
     )
     return row

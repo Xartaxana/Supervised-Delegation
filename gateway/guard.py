@@ -17,10 +17,12 @@ Semantics (per gateway alias, per local calendar day):
 - spend >= budget: request refused with HTTP 429, a 'block' row
   in budget_events.
 
-Sliding-window TOKEN quotas (t-018, D-0063): Groq free-tier limits
-are rolling windows (TPD is a rolling 24h window, not a calendar
-day -- confirmed the hard way on t-015, CURRENT_CONTEXT.md), so they
-cannot reuse the calendar-day $ budget logic above. `quota_windows`
+Sliding-window TOKEN quotas: provider free-tier limits are often
+rolling windows rather than calendar-day resets (verify whether your
+provider's daily limit is a rolling 24h window or a calendar day
+before relying on either assumption -- a wrong assumption here fails
+silently until the provider's own count disagrees with yours), so
+they cannot reuse the calendar-day $ budget logic above. `quota_windows`
 in the same config file lists, per gateway alias, one or more
 {window_seconds, limit_tokens} walls; each is checked independently
 against prompt_tokens+completion_tokens summed over `requests` rows

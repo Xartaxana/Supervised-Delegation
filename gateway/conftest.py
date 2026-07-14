@@ -1,15 +1,14 @@
 """Shared pytest fixtures for the gateway test suite.
 
-Test isolation (D-0016, Delegated Task 4; born from the 2026-07-07
-Lead review finding #1): with an unlucky collection order, a test
-that leaves litellm.callbacks pointed at the real SQLiteLogger can
-have its callback fire on a LATER test's mock litellm.completion
-calls, after that later test's own GATEWAY_DB_PATH monkeypatch has
-already been torn down -- writing rows into the real
-gateway/requests.db. This happened for real on 2026-07-04 (16 mock
-rows in two pytest clusters at 19:08 and 19:10; see CURRENT_CONTEXT.md
-"Delegated Task 4"). Alphabetical collection order
-(test_shadow_eval.py before test_sqlite_logger.py) happened to hide it.
+Test isolation (born from a live incident): with an unlucky
+collection order, a test that leaves litellm.callbacks pointed at the
+real SQLiteLogger can have its callback fire on a LATER test's mock
+litellm.completion calls, after that later test's own GATEWAY_DB_PATH
+monkeypatch has already been torn down -- writing rows into the real
+gateway/requests.db. This happened for real (mock rows observed in
+the live database in two pytest clusters minutes apart); alphabetical
+collection order (test_shadow_eval.py before test_sqlite_logger.py)
+happened to hide it.
 
 This autouse, function-scoped fixture removes both preconditions for
 every test in the suite, not just the ones that remembered to guard
