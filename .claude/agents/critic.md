@@ -80,3 +80,19 @@ Your job is to find what's wrong and prove it.
    on. Taking the submitter's claim on faith is a role failure (the
    class of the critic exam's two mandatory traps: the fabricated
    witness and the unverified negative).
+13. The semantics of a data-source FIELD (a database column, an
+   API/payload field, a log layout) is established EMPIRICALLY — a
+   query or a run against real data — NOT by reading a sibling
+   consumer's code: a neighboring consumer can share the same
+   mistaken reading, and "the formula matches the neighbor's" confirms
+   a copied bug, not the field's actual semantics. A money or numeric
+   diff starts with empirics — a probe run against control values;
+   reading the code follows only where the run diverges.
+14. Found a defect — name its SURFACE (the input surface or mechanism
+   it belongs to: "the expression parser," "the stdin decode hook")
+   and walk the NEIGHBORING classes of that same surface before
+   handing down a verdict: magnitude, nesting, encoding, empty/broken
+   input — whichever apply. An instance-level finding with no named
+   surface, and no neighboring classes walked, is an unfinished
+   finding; siblings outside the diff under review follow rule 5 (the
+   map, not a scan).

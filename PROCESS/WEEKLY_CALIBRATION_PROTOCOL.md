@@ -273,6 +273,23 @@ for the period, and diffs to DECISIONS.md.
     script's own failure mode is caught by tests in the canonical
     suite run.
 
+19. **Policy-as-code gates.** Posture: `.claude/settings.json` carries
+    all five hooks (dispatch_gate + critic_snapshot on PreToolUse,
+    dod_track on PostToolUse, dod_gate on SubagentStop, main_gate on
+    Stop) -- a missing entry is itself a finding (a rule that used to
+    be enforced by discipline alone has silently reverted to that).
+    Liveness: with live dispatches in the window, `.claude/dod_track/`
+    is non-empty for at least one session, and any accumulated
+    `gate_log` entries are non-empty; every gate silent while
+    dispatches keep happening is a failure of the posture check above,
+    not a clean bill of health -- verify the hooks actually ran before
+    concluding "no blocks were needed". Blocks: spot-check 1-2
+    `gate_log` entries (`blocked` / `skipped_after_2_blocks`) against
+    the session's actual edits/runs for the window; a logged block
+    with no matching fact in the track, or a block that shouldn't have
+    fired given the track's own contents, is a finding about the gate
+    itself, not about the session it blocked.
+
 ## Closing out a run
 
 DELEGATION_TABLE.md statuses move only on this data (Update Rule 1;

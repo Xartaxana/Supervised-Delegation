@@ -2,6 +2,29 @@
   "hooks": {
     "SessionStart": [
       { "hooks": [ { "type": "command", "command": "python tools/session_context.py" } ] }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Task|Agent",
+        "hooks": [
+          { "type": "command", "command": "python tools/dispatch_gate.py" },
+          { "type": "command", "command": "python tools/critic_snapshot.py" }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell",
+        "hooks": [
+          { "type": "command", "command": "python tools/dod_track.py" }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      { "hooks": [ { "type": "command", "command": "python tools/dod_gate.py" } ] }
+    ],
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "python tools/main_gate.py" } ] }
     ]
   }
 }

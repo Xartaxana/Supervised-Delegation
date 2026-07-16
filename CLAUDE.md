@@ -73,7 +73,13 @@ separately in this deployment).
    still rests with Lead (flat delegation rule). Small diffs: a
    "critic: skipped, <reason>" note inside the `accepted` event is a
    waiver available ONLY to an acceptor whose tier is above the
-   executor's (role-vs-tier acceptance matrix).
+   executor's (role-vs-tier acceptance matrix). Critic-on-plan: when a
+   recon deliverable will itself serve as the SPEC for implementation
+   worth more than roughly 30 minutes of work, it gets a critic review
+   of the PLAN before any code starts — not just a review of the code
+   afterward. That review checks the plan's facts by trail
+   (trail-based acceptance rule); feasibility is an architectural
+   judgment, and unless this gate runs, no one has reviewed it before.
 4. Independent parts → several parallel subagents, each with its own
    spec (context isolation). Parallel specs declare which paths they
    own; Lead checks for overlap before launching. Parallel SESSIONS in
@@ -174,17 +180,20 @@ separately in this deployment).
    ANY tier states what "done" means, and how acceptance will check
    it — in a form suited to that tier. builder: acceptance criteria +
    a verification run, whose output becomes the witness (witness
-   rule). scout: an explicit question(s) and a completeness criterion;
-   "X is nowhere to be found" is a valid outcome, and it requires a
-   trail (trail-based acceptance rule). critic: what to review against
-   — the dispatch attaches the spec/DoD of the work under review,
-   otherwise only general quality is checkable, not fit to the task. A
-   dispatch with no DoD is returned by the worker as questions, before
-   work starts. Alongside the DoD, a dispatch carries a CONTEXT
-   MANIFEST (dispatch-context-manifest rule): "given" — an enumeration
-   of the files/data injected into the worker (the starting basket;
-   its sufficiency is the Lead's responsibility); a WRITING dispatch
-   must also carry "owns" (the paths it may write), "non-goals" and
+   rule). A task with an INTERACTIVE surface (a CLI/UI that accepts
+   user input) has a DoD that includes an adversarial mini-battery:
+   magnitude, nesting, encoding, empty/broken input. scout: an
+   explicit question(s) and a completeness criterion; "X is nowhere to
+   be found" is a valid outcome, and it requires a trail (trail-based
+   acceptance rule). critic: what to review against — the dispatch
+   attaches the spec/DoD of the work under review, otherwise only
+   general quality is checkable, not fit to the task. A dispatch with
+   no DoD is returned by the worker as questions, before work starts.
+   Alongside the DoD, a dispatch carries a CONTEXT MANIFEST
+   (dispatch-context-manifest rule): "given" — an enumeration of the
+   files/data injected into the worker (the starting basket; its
+   sufficiency is the Lead's responsibility); a WRITING dispatch must
+   also carry "owns" (the paths it may write), "non-goals" and
    "handoff" (what comes back for acceptance); a parallel fan-out
    declares ownership per rule 4 plus an optional maxConcurrent cap.
    The manifest is DECLARATIVE on reads and NORMATIVE on writes: the
@@ -194,9 +203,34 @@ separately in this deployment).
    manifest is simply the explicit enumeration of what's attached in
    the dispatch text, no fields. A writing/parallel dispatch with no
    manifest is returned by the worker as questions, same as one with
-   no DoD. Lead-tier tasks and the judge role are covered by
-   their own dedicated mechanisms (the Lead exam, weekly calibration,
-   and judge calibration — not repeated here).
+   no DoD. Completeness of the DoD and of the manifest is the
+   DISPATCHER's duty BEFORE sending — checking against this rule is
+   part of composing the dispatch, not a step delegated to the
+   worker's judgment. A worker returning a DoD-less (or, for a
+   writing/parallel dispatch, manifest-less) dispatch is an emergency
+   net, not the normal cycle: each return is a double context switch;
+   frequent returns are a coordinator spec-discipline defect, worth
+   flagging at calibration. Lead-tier tasks and the judge role are
+   covered by their own dedicated mechanisms (the Lead exam, weekly
+   calibration, and judge calibration — not repeated here).
+
+11a. Question routing (question-routing rule): questions route UP,
+   work routes DOWN; the apex of the hierarchy is the OPERATOR —
+   above Lead itself. An underspecified REQUIREMENT (interpreting
+   intent, choosing the shape of a deliverable) is a question for the
+   operator, and the work on that part waits for the answer; deciding
+   it on the operator's behalf is out of bounds for every tier,
+   including Lead. The skip concession is directional, downward only:
+   a tier may skip a dispatch to a tier below itself (with an event),
+   but it may not absorb a question that belongs above its own level
+   — only escalate (rule 6; once tiers are exhausted, it queues for
+   Lead via `escalated`). Work the coordinator executes itself after a
+   `dispatch_skipped` passes through the same acceptance as a builder
+   diff (the role-vs-tier acceptance matrix); handing the operator
+   something that hasn't cleared that acceptance is a violation. A
+   headless environment with no operator present gets a substitute —
+   a proxy-escalation path — only as an explicit, named clause for
+   that environment, not a silent default.
 
 ## Routing log — logs/routing-log.jsonl
 
@@ -263,7 +297,13 @@ journal_validator.py): append-only, typed fields, ts-monotonicity and
 a ban on ts from the future (the timestamp finding above), task_id
 novelty (a repeat `delegated` on an open task is legitimate from a
 different tier — a critic-entry — or as a retry with `attempt`>=2
-after `rejected`; `delegated` on a closed task is forbidden —
+after `rejected`, or as a DEAD-WORKER REPLACEMENT: a
+`replaces_worker:<previous worker_ref>` marker in notes — not a
+retry, `attempt` does not grow; the handle must literally match the
+`worker_ref` of a prior `delegated` line of the same task, and the
+marker is a bare ref right after the colon (trailing punctuation
+breaks the match — the validator takes the first non-whitespace
+token); `delegated` on a closed task is forbidden —
 no-silent-reuse rule); new accepted/rejected events carry `by` (the
 accepting model); `accepted` for scout/builder/critic is legitimate
 when tier(by) is above the tier of `agent`, OR with a `basis` field:

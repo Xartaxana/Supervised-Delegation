@@ -302,6 +302,98 @@ def test_9g_duplicate_pattern_same_agent_no_attempt_no_rejected_fails():
     assert any("forbidden duplicate" in v for v in violations)
 
 
+# ---- 9c2. dead-worker replacement (replaces_worker marker) ----
+
+
+def test_9c2_replaces_worker_matching_prior_ref_passes():
+    # t-001 delegated to builder in HEAD with worker_ref
+    # "cli:2026-07-10T08:00:00" (see HEAD_LINE's default worker_ref).
+    # A NEW delegated by the SAME agent, no attempt, no rejected above
+    # -- but notes carry a replaces_worker marker whose handle matches
+    # that exact worker_ref -- legal (a dead-worker replacement, not a
+    # rule-6 retry).
+    staged = _staged(
+        _line(event="delegated", ts="2026-07-10T08:10:00", agent="builder", model="sonnet",
+              task_id="t-001", worker_ref="cli:2026-07-10T08:10:00",
+              notes="replaces_worker:cli:2026-07-10T08:00:00 (worker died, no verdict)")
+    )
+    code, violations = jv.decide(staged, HEAD_TEXT, NOW)
+    assert code == 0
+
+
+def test_9c2_replaces_worker_fabricated_handle_fails():
+    # The claimed handle does not match ANY earlier delegated
+    # worker_ref for this task_id -- a fabricated replacement, FAIL.
+    staged = _staged(
+        _line(event="delegated", ts="2026-07-10T08:10:00", agent="builder", model="sonnet",
+              task_id="t-001", worker_ref="cli:2026-07-10T08:10:00",
+              notes="replaces_worker:cli:2026-07-10T07:00:00 (never happened)")
+    )
+    code, violations = jv.decide(staged, HEAD_TEXT, NOW)
+    assert code == 1
+    assert any("fabricated replacement" in v for v in violations)
+
+
+def test_9c2_replaces_worker_matches_ref_from_a_different_agents_delegated_line():
+    # Rule 9(c2) searches worker_ref across delegated lines of ANY
+    # agent for this task_id, not only lines by the same agent as the
+    # new one: a critic-entry's worker_ref can legitimately be claimed
+    # as replaced by a later builder retry.
+    staged = _staged(
+        _line(event="delegated", ts="2026-07-10T08:10:00", agent="critic", model="opus",
+              task_id="t-001", worker_ref="agent:critic-1",
+              notes="critic-gate continuation dispatch, case b"),
+        _line(event="delegated", ts="2026-07-10T08:20:00", agent="critic", model="opus",
+              task_id="t-001", worker_ref="agent:critic-2",
+              notes="replaces_worker:agent:critic-1 (critic-1 died mid-review)"),
+    )
+    code, violations = jv.decide(staged, HEAD_TEXT, NOW)
+    assert code == 0
+
+
+def test_9c2_replaces_worker_handle_from_unrelated_task_id_does_not_count():
+    # A handle that is a real worker_ref, but for a DIFFERENT task_id,
+    # must not satisfy rule 9(c2) for this one -- the prior-refs set
+    # is scoped per task_id.
+    staged = _staged(
+        _line(event="delegated", ts="2026-07-10T08:10:00", model="sonnet", task_id="t-002",
+              worker_ref="cli:2026-07-10T08:10:00", notes="unrelated task"),
+        _line(event="delegated", ts="2026-07-10T08:20:00", agent="builder", model="sonnet",
+              task_id="t-001", worker_ref="cli:2026-07-10T08:20:00",
+              notes="replaces_worker:cli:2026-07-10T08:10:00 (wrong task's ref)"),
+    )
+    code, violations = jv.decide(staged, HEAD_TEXT, NOW)
+    assert code == 1
+    assert any("fabricated replacement" in v for v in violations)
+
+
+def test_9c2_replaces_worker_does_not_require_attempt_field():
+    # rule 9(c2) explicitly does not require attempt to grow -- a bare
+    # replaces_worker marker with no attempt field at all is legal.
+    obj = json.loads(
+        _line(event="delegated", ts="2026-07-10T08:10:00", agent="builder", model="sonnet",
+              task_id="t-001", worker_ref="cli:2026-07-10T08:10:00",
+              notes="replaces_worker:cli:2026-07-10T08:00:00")
+    )
+    assert "attempt" not in obj
+    staged = _staged(json.dumps(obj, ensure_ascii=False))
+    code, violations = jv.decide(staged, HEAD_TEXT, NOW)
+    assert code == 0
+
+
+def test_9c2_replaces_worker_takes_priority_over_plain_duplicate_fail():
+    # Sanity: without the marker, the same shape of line fails as a
+    # plain duplicate (case d) -- proves the c2 test above is actually
+    # exercising the marker branch, not some other path to a pass.
+    staged = _staged(
+        _line(event="delegated", ts="2026-07-10T08:10:00", agent="builder", model="sonnet",
+              task_id="t-001", notes="no replaces_worker marker here at all")
+    )
+    code, violations = jv.decide(staged, HEAD_TEXT, NOW)
+    assert code == 1
+    assert any("forbidden duplicate" in v for v in violations)
+
+
 def test_9g_delegated_after_accepted_fails_reopen_forbidden():
     # (g) negative #2: task_id already closed (accepted above) -- a new
     # delegated on it is a forbidden reopen (D-0060: treat as two tasks),

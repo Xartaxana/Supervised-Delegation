@@ -42,9 +42,20 @@ log" section):
        delegated agents -- legal ONLY with an attempt field (integer
        >=2) AND an earlier rejected for the same task_id (a retry
        after rejection);
+    c2) (dead-worker replacement) the SAME situation as (c) (agent
+       matches, task open) but rejected is NOT required and attempt
+       does not need to grow -- this is not a rule-6 retry -- is legal
+       if notes contain the literal substring "replaces_worker:" with
+       a non-empty handle immediately after it (the first non-
+       whitespace token), AND that handle LITERALLY matches the
+       worker_ref of some earlier delegated line for this SAME
+       task_id (any agent). Guard against a fabricated replacement: a
+       handle that appears in no earlier delegated line for this
+       task_id -> FAIL (see extract_replaces_worker).
     d) anything else -- FAIL (the duplicate-dispatch pattern: same
-       agent, no attempt, no rejected; and delegated on a CLOSED task
-       -- reopening is forbidden, a collision counts as two tasks).
+       agent, no attempt, no rejected, no valid replaces_worker; and
+       delegated on a CLOSED task -- reopening is forbidden, a
+       collision counts as two tasks).
     For a new accepted/rejected/escalated/defect_found -- it must
     reference a task_id already seen earlier in the file (in HEAD or
     earlier in this same commit); unchanged otherwise.
@@ -93,6 +104,11 @@ AGENT_TIER = {"scout": "haiku", "builder": "sonnet", "critic": "opus"}
 BASIS_VALUES = {"critic", "queued-to-lead"}
 
 TASK_ID_RE = re.compile(r"^t-(\d{3,})$")
+# Dead-worker replacement marker (rule 9c2): the literal substring
+# "replaces_worker:" plus a non-empty handle = the first non-whitespace
+# token right after the colon (matches the shape of existing worker_ref
+# values -- 'cli:...', 'agent:...' -- no internal whitespace).
+REPLACES_WORKER_RE = re.compile(r"replaces_worker:(\S+)")
 # ISO without a timezone: 'YYYY-MM-DDTHH:MM:SS' with optional
 # microseconds, NO 'Z'/offset -- a timezone is forbidden by the spec
 # (otherwise monotonicity between lines of different offsets loses
@@ -146,17 +162,33 @@ def max_task_num(ids: set[str]) -> int:
     return max(nums) if nums else 0
 
 
-def _harvest_line_into(event, task_id, agent, delegated_agents: dict, closed_tasks: set,
-                        rejected_tasks: set) -> None:
-    """Rule 9(b/c) state: updates the per-task_id history by ONE line
+def extract_replaces_worker(notes) -> str | None:
+    """Rule 9(c2): pulls the handle out of a "replaces_worker:<handle>"
+    marker in notes -- the literal substring plus the first non-
+    whitespace token right after the colon. None if there's no marker
+    (notes isn't a string, or the substring is absent)."""
+    if not isinstance(notes, str):
+        return None
+    m = REPLACES_WORKER_RE.search(notes)
+    return m.group(1) if m else None
+
+
+def _harvest_line_into(event, task_id, agent, worker_ref, delegated_agents: dict, closed_tasks: set,
+                        rejected_tasks: set, task_worker_refs: dict) -> None:
+    """Rule 9(b/c/c2) state: updates the per-task_id history by ONE line
     (used both to seed state from HEAD and, line by line, for new
     lines -- call order = line order in the file, so the state at the
     time line N is checked reflects exactly "everything earlier in
-    the file")."""
+    the file"). task_worker_refs accumulates every worker_ref of every
+    delegated (any agent) for this task_id -- rule 9(c2) looks for the
+    claimed prior worker_ref in this same set, not only among lines by
+    the same agent."""
     if not (isinstance(task_id, str) and TASK_ID_RE.match(task_id)):
         return
     if event == "delegated" and isinstance(agent, str) and agent:
         delegated_agents.setdefault(task_id, set()).add(agent)
+        if isinstance(worker_ref, str) and worker_ref.strip():
+            task_worker_refs.setdefault(task_id, set()).add(worker_ref.strip())
     elif event == "accepted":
         closed_tasks.add(task_id)
     elif event == "rejected":
@@ -164,18 +196,20 @@ def _harvest_line_into(event, task_id, agent, delegated_agents: dict, closed_tas
 
 
 def harvest_task_state(lines: list[str]):
-    """Seeds rule 9(b/c) state from the HEAD version (or any prefix of
-    lines) -- (delegated_agents, closed_tasks, rejected_tasks)."""
+    """Seeds rule 9(b/c/c2) state from the HEAD version (or any prefix
+    of lines) -- (delegated_agents, closed_tasks, rejected_tasks,
+    task_worker_refs)."""
     delegated_agents: dict[str, set] = {}
     closed_tasks: set = set()
     rejected_tasks: set = set()
+    task_worker_refs: dict[str, set] = {}
     for line in lines:
         obj = _try_parse_obj(line)
         if obj is None:
             continue
-        _harvest_line_into(obj.get("event"), obj.get("task_id"), obj.get("agent"),
-                           delegated_agents, closed_tasks, rejected_tasks)
-    return delegated_agents, closed_tasks, rejected_tasks
+        _harvest_line_into(obj.get("event"), obj.get("task_id"), obj.get("agent"), obj.get("worker_ref"),
+                           delegated_agents, closed_tasks, rejected_tasks, task_worker_refs)
+    return delegated_agents, closed_tasks, rejected_tasks, task_worker_refs
 
 
 def _last_head_ts(head_lines: list[str]):
@@ -240,7 +274,7 @@ def validate_new_lines(new_lines: list[str], head_lines: list[str],
     max_num = max_task_num(seen_task_ids)
     last_ts = _last_head_ts(head_lines)
     now_limit = now + datetime.timedelta(minutes=10)
-    delegated_agents, closed_tasks, rejected_tasks = harvest_task_state(head_lines)
+    delegated_agents, closed_tasks, rejected_tasks, task_worker_refs = harvest_task_state(head_lines)
 
     for idx, line in enumerate(new_lines):
         line_no = len(head_lines) + idx + 1
@@ -347,12 +381,28 @@ def validate_new_lines(new_lines: list[str], head_lines: list[str],
                     attempt = obj.get("attempt")
                     valid_attempt = (isinstance(attempt, int) and not isinstance(attempt, bool)
                                       and attempt >= 2)
-                    if not (valid_attempt and task_id in rejected_tasks):
-                        # (c) retry conditions not met -> (d) duplicate-dispatch pattern
+                    retry_ok = valid_attempt and task_id in rejected_tasks
+                    replaces_handle = extract_replaces_worker(notes)
+                    if retry_ok:
+                        pass  # (c) legal retry after rejected
+                    elif replaces_handle is not None:
+                        prior_refs = task_worker_refs.get(task_id, set())
+                        if replaces_handle in prior_refs:
+                            pass  # (c2) legal dead-worker replacement
+                        else:
+                            violations.append(
+                                f"{tag}: replaces_worker={replaces_handle!r} does not match any "
+                                f"earlier delegated worker_ref for task_id={task_id!r} -- a "
+                                "fabricated replacement is forbidden (rule 9c2)"
+                            )
+                    else:
+                        # (c) retry conditions not met, no replaces_worker marker -> (d)
                         violations.append(
                             f"{tag}: repeated delegated by the same agent={agent!r} on task_id={task_id!r} "
                             "without attempt>=2 and an earlier rejected -- forbidden duplicate "
-                            "(the no-silent-reuse rule)"
+                            "(the no-silent-reuse rule); a legal alternative is a "
+                            "'replaces_worker:<prior worker_ref>' marker in notes when replacing "
+                            "a dead worker with no verdict (rule 9c2)"
                         )
         elif event in ("accepted", "rejected", "escalated", "defect_found") and valid_tid:
             if task_id not in seen_task_ids:
@@ -360,7 +410,8 @@ def validate_new_lines(new_lines: list[str], head_lines: list[str],
                     f"{tag}: task_id {task_id!r} does not reference anything existing earlier in the file"
                 )
 
-        _harvest_line_into(event, task_id, agent, delegated_agents, closed_tasks, rejected_tasks)
+        _harvest_line_into(event, task_id, agent, obj.get("worker_ref"), delegated_agents, closed_tasks,
+                           rejected_tasks, task_worker_refs)
 
         parsed_ts = parse_ts(ts) if isinstance(ts, str) else None
         if isinstance(ts, str) and ts and parsed_ts is None:
