@@ -254,3 +254,9 @@ gateway, verbatim). Turn it back off once the session is done.
 `requests.db` has no built-in TTL or purge for raw content; this
 toolkit ships no purge mechanism for it either -- clearing out raw
 text after a replay session is the operator's duty.
+
+At raw-off, the `error` column is also bounded: it is truncated to the
+first ~200 chars of its first line (suffix `...[truncated]` when
+anything was cut), since provider exceptions can themselves echo
+prompt fragments; the full error is recorded when raw text logging is
+on.

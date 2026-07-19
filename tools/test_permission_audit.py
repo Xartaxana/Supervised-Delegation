@@ -12,6 +12,7 @@ appended AFTER the snapshot).
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import permission_audit as pa
 
@@ -227,3 +228,115 @@ def test_default_project_key_is_deterministic_for_real_repo_path(tmp_path):
     key2 = pa._default_project_key(repo)
     assert key1 == key2
     assert "\\" not in key1 and "/" not in key1 and ":" not in key1 and "_" not in key1
+
+
+class _FakeResolved:
+    def __init__(self, s):
+        self._s = s
+
+    def __str__(self):
+        return self._s
+
+
+class _FakePath:
+    def __init__(self, s):
+        self._s = s
+
+    def resolve(self):
+        return _FakeResolved(self._s)
+
+
+def test_default_project_key_dot_and_space_boundaries_deterministic():
+    # Slug-boundary check (queue item 1, toolkit-release-v040): the
+    # replacement regex is [\\/:_] -> "-" -- it does NOT touch dots or
+    # spaces. This is UNVERIFIED AGAINST REAL HARNESS NAMING (the
+    # function's own docstring says so); do not treat the asserted value
+    # below as "the correct slug" -- it only locks in this function's
+    # CURRENT, deterministic output as a regression contract, so a future
+    # change to the regex shows up as a diff instead of silently drifting.
+    # If a real install's actual ~/.claude/projects/<slug> differs on a
+    # dot/space path, the escape hatch is the CLAUDE_PROJECTS env
+    # override (_resolve_claude_projects), not "fixing" this regex blind.
+    dot_path = r"D:\Repo.With.Dots"
+    key_a = pa._default_project_key(_FakePath(dot_path))
+    key_b = pa._default_project_key(_FakePath(dot_path))
+    assert key_a == key_b  # deterministic
+    assert key_a == "D--Repo.With.Dots"  # current behavior: dots pass through
+
+    space_path = r"D:\Repo With Spaces"
+    key_c = pa._default_project_key(_FakePath(space_path))
+    key_d = pa._default_project_key(_FakePath(space_path))
+    assert key_c == key_d  # deterministic
+    assert key_c == "D--Repo With Spaces"  # current behavior: spaces pass through
+
+
+# --- _resolve_claude_projects / CLAUDE_PROJECTS env override (queue item 1) ---
+
+
+def test_resolve_claude_projects_env_override_takes_full_path(tmp_path, monkeypatch):
+    override_dir = tmp_path / "custom_projects_dir"
+    monkeypatch.setenv("CLAUDE_PROJECTS", str(override_dir))
+    resolved = pa._resolve_claude_projects(pa.REPO)
+    assert resolved == override_dir
+
+
+def test_resolve_claude_projects_no_env_falls_back_to_slug(monkeypatch):
+    monkeypatch.delenv("CLAUDE_PROJECTS", raising=False)
+    resolved = pa._resolve_claude_projects(pa.REPO)
+    expected = Path.home() / ".claude" / "projects" / pa._default_project_key(pa.REPO)
+    assert resolved == expected
+
+
+def test_claude_projects_env_override_works_end_to_end(tmp_path, monkeypatch):
+    # The override is a FULL path, taking effect before the transcripts
+    # scan even runs -- wire it the way main() would (CLAUDE_PROJECTS
+    # resolved once at import time; here we simulate that by setting the
+    # module attribute directly, same pattern the rest of this file uses
+    # to point CLAUDE_PROJECTS at a fixture directory) and confirm a
+    # transcript placed there is actually read.
+    override_dir = tmp_path / "custom_projects_dir"
+    override_dir.mkdir()
+    transcript = override_dir / "session.jsonl"
+    _write_tool_use(transcript, "echo overridden-transcript")
+    monkeypatch.setenv("CLAUDE_PROJECTS", str(override_dir))
+
+    resolved = pa._resolve_claude_projects(pa.REPO)
+    assert resolved == override_dir
+    monkeypatch.setattr(pa, "CLAUDE_PROJECTS", resolved)
+
+    calls = list(pa.iter_tool_calls(None))
+    cmds = [c[4] for c in calls]
+    assert "echo overridden-transcript" in " ".join(cmds)
+
+
+# --- check_transcripts_present: warn-on-empty (queue item 1) ---
+
+
+def test_check_transcripts_present_warns_when_dir_missing(tmp_path, capsys):
+    missing = tmp_path / "does_not_exist"
+    warned = pa.check_transcripts_present(missing)
+    assert warned is True
+    err = capsys.readouterr().err
+    assert "WARNING" in err
+    assert str(missing) in err
+    assert "CLAUDE_PROJECTS" in err
+
+
+def test_check_transcripts_present_warns_when_dir_empty(tmp_path, capsys):
+    empty = tmp_path / "empty_projects"
+    empty.mkdir()
+    warned = pa.check_transcripts_present(empty)
+    assert warned is True
+    err = capsys.readouterr().err
+    assert "WARNING" in err
+
+
+def test_check_transcripts_present_no_warn_when_populated(tmp_path, capsys):
+    populated = tmp_path / "populated_projects"
+    populated.mkdir()
+    _write_tool_use(populated / "session.jsonl", "echo something")
+    warned = pa.check_transcripts_present(populated)
+    assert warned is False
+    err = capsys.readouterr().err
+    assert err == ""
+

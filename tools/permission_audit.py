@@ -64,8 +64,22 @@ def _default_project_key(repo: Path) -> str:
     return re.sub(r"[\\/:_]", "-", raw)
 
 
+def _resolve_claude_projects(repo: Path) -> Path:
+    """The transcripts directory to scan. `CLAUDE_PROJECTS`, if set in the
+    environment, is a FULL path override for this project's transcripts
+    directory -- it takes precedence over the slug computed by
+    `_default_project_key`, which is only a best-effort guess (see its
+    docstring: untested against dots/spaces in the repo path). Use the
+    override on any install where the guessed slug does not match this
+    machine's actual `~/.claude/projects/<slug>` layout."""
+    override = os.environ.get("CLAUDE_PROJECTS")
+    if override:
+        return Path(override)
+    return Path(os.path.expanduser("~")) / ".claude" / "projects" / _default_project_key(repo)
+
+
 PROJECT_KEY = _default_project_key(REPO)
-CLAUDE_PROJECTS = Path(os.path.expanduser("~")) / ".claude" / "projects" / PROJECT_KEY
+CLAUDE_PROJECTS = _resolve_claude_projects(REPO)
 
 # --- commands the harness auto-allows with no allowlist entry (a practical, trimmed list) ---
 AUTO_ALLOW_ANY_ARGS = {
@@ -217,6 +231,27 @@ def scan_broad_wildcards() -> list[tuple[str, str, str, str]]:
     return out
 
 
+def check_transcripts_present(claude_projects: Path | None = None) -> bool:
+    """Warn loudly on stderr (not an exception -- the scan continues with
+    zero) when the transcripts directory does not exist, or exists but
+    the glob finds zero files. Silent-zero symptom: an install whose
+    computed/overridden slug does not match this machine's real
+    `~/.claude/projects/<slug>` layout otherwise just prints "Scanned 0"
+    with no hint why. Returns True iff it printed the warning."""
+    cp = claude_projects if claude_projects is not None else CLAUDE_PROJECTS
+    n = 0
+    if cp.exists():
+        n = len(list(cp.glob("*.jsonl"))) + len(list(cp.glob("*/subagents/agent-*.jsonl")))
+    if not cp.exists() or n == 0:
+        print(
+            f"WARNING: 0 transcripts found at {cp} - likely a wrong project slug; "
+            "set CLAUDE_PROJECTS to the correct '~/.claude/projects/<slug>' directory",
+            file=sys.stderr,
+        )
+        return True
+    return False
+
+
 def snapshot_transcripts(session: str | None = None) -> list[tuple[Path, str, int]]:
     """[(path, agent_type, size_at_snapshot), ...] -- fix the list of
     transcripts and their sizes BEFORE scanning (refinement a): a run
@@ -345,6 +380,8 @@ def main(argv=None):
     ap.add_argument("--summary", action="store_true", help="a grouped summary instead of the full list")
     args = ap.parse_args(argv)
     minutes = None if getattr(args, "all") else args.minutes
+
+    check_transcripts_present()
 
     # refinement (b): warn about broad allowlist patterns -- before the summary
     broad = scan_broad_wildcards()

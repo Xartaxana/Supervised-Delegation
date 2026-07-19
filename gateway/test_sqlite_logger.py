@@ -522,6 +522,113 @@ def test_startup_banner_reports_enabled_when_flag_true(capsys, monkeypatch):
     assert "enabled" in captured.err.lower()
 
 
+def test_failure_error_truncated_when_raw_text_logging_disabled(db, monkeypatch):
+    """At raw-off (default), a long multi-line error is cut to the first
+    200 chars of its first line, with the truncation suffix appended --
+    docs/tasks/2026-07-20_toolkit-release-v040.md queue item 3.
+
+    Calls log_failure_event directly (rather than routing a string
+    through litellm's mock_response) so the exact error text under test
+    is controlled precisely -- litellm's mock only raises real
+    exceptions for a handful of exact-match strings (RateLimitError,
+    ContextWindowExceededError, InternalServerError, a
+    content_filter_policy prefix); any other string is returned as a
+    successful mock completion instead of failing, verified empirically
+    against litellm.main._handle_mock_potential_exceptions."""
+    monkeypatch.delenv("GATEWAY_LOG_RAW_TEXT", raising=False)
+    from sqlite_logger import logger_instance
+
+    long_first_line = "boom: " + "x" * 300
+    error_text = long_first_line + "\nsecret prompt fragment on line two"
+    kwargs = {
+        "model": "gpt-3.5-turbo",
+        "messages": [{"role": "user", "content": "ping"}],
+        "litellm_params": {"metadata": {}},
+        "exception": Exception(error_text),
+    }
+    import datetime
+
+    now = datetime.datetime.now()
+    logger_instance.log_failure_event(kwargs, None, now, now)
+
+    conn = sqlite3.connect(db)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM requests WHERE status = 'failure'").fetchone()
+    assert row["error"].endswith("...[truncated]")
+    assert "\n" not in row["error"]
+    assert len(row["error"]) == 200 + len("...[truncated]")
+    assert "secret prompt fragment" not in row["error"]
+
+
+def test_failure_error_full_when_raw_text_logging_enabled(db, monkeypatch):
+    """At raw-on, the error column keeps the full, untruncated text."""
+    monkeypatch.setenv("GATEWAY_LOG_RAW_TEXT", "true")
+    from sqlite_logger import logger_instance
+
+    long_first_line = "boom: " + "x" * 300
+    error_text = long_first_line + "\nsecond line detail"
+    kwargs = {
+        "model": "gpt-3.5-turbo",
+        "messages": [{"role": "user", "content": "ping"}],
+        "litellm_params": {"metadata": {}},
+        "exception": Exception(error_text),
+    }
+    import datetime
+
+    now = datetime.datetime.now()
+    logger_instance.log_failure_event(kwargs, None, now, now)
+
+    conn = sqlite3.connect(db)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM requests WHERE status = 'failure'").fetchone()
+    assert "second line detail" in row["error"]
+    assert not row["error"].endswith("...[truncated]")
+
+
+def test_failure_error_short_single_line_not_suffixed_when_disabled(db, monkeypatch):
+    """At raw-off, a short single-line error passes through unchanged --
+    no suffix when nothing was actually cut."""
+    monkeypatch.delenv("GATEWAY_LOG_RAW_TEXT", raising=False)
+    from sqlite_logger import logger_instance
+    import litellm
+
+    litellm.callbacks = [logger_instance]
+    with pytest.raises(Exception):
+        litellm.completion(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": "ping"}],
+            mock_response="litellm.InternalServerError",
+        )
+
+    wait_for_row(db, "failure")
+    conn = sqlite3.connect(db)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM requests WHERE status = 'failure'").fetchone()
+    assert "InternalServerError" in row["error"]
+    assert not row["error"].endswith("...[truncated]")
+
+
+@pytest.mark.parametrize(
+    "length, expect_suffix",
+    [(200, False), (201, True)],
+    ids=["at-limit", "one-over-limit"],
+)
+def test_truncate_error_boundary(length, expect_suffix):
+    """ERROR_TRUNCATE_LENGTH boundary: exactly 200 chars on a single line
+    passes through unchanged; 201 chars gets cut to 200 plus the
+    suffix (rule 6a: a test at the limit and one past it)."""
+    from sqlite_logger import ERROR_TRUNCATE_LENGTH, _truncate_error
+
+    assert ERROR_TRUNCATE_LENGTH == 200
+    text = "e" * length
+    result = _truncate_error(text)
+    if expect_suffix:
+        assert result == "e" * 200 + "...[truncated]"
+    else:
+        assert result == text
+        assert not result.endswith("...[truncated]")
+
+
 def test_metadata_category_null_when_not_provided(db):
     """Without metadata.category the column stays NULL."""
     from litellm.types.utils import ModelResponse, Usage

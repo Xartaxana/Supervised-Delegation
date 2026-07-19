@@ -38,6 +38,36 @@ from litellm.integrations.custom_logger import CustomLogger
 # logging is disabled (the default). See module docstring.
 RAW_TEXT_DISABLED_MARKER = "[raw text logging disabled]"
 
+# Truncation applied to the `error` column when raw text logging is off
+# (operator decision, docs/tasks/2026-07-20_toolkit-release-v040.md,
+# "Next batch queue" item 3, option "b"): provider exceptions can echo
+# fragments of the prompt/response (content-policy errors especially),
+# so `error` is not exempt from the masking the raw-text flag applies
+# to the other two text columns. Truncating to the first ~200 chars of
+# the first line keeps the error useful for diagnosis while bounding
+# what can leak through it. Full error text is still recorded when raw
+# text logging is on.
+ERROR_TRUNCATE_LENGTH = 200
+ERROR_TRUNCATE_SUFFIX = "...[truncated]"
+
+
+def _truncate_error(error_text: str) -> str:
+    """Bound the `error` column at raw-off: first line, first
+    ERROR_TRUNCATE_LENGTH chars of it, with ERROR_TRUNCATE_SUFFIX
+    appended whenever anything was actually cut -- a later line
+    dropped, or the first line itself over the limit. A single-line
+    error at or under the limit passes through unchanged, no suffix."""
+    truncated = False
+    if "\n" in error_text:
+        first_line, _ = error_text.split("\n", 1)
+        truncated = True
+    else:
+        first_line = error_text
+    if len(first_line) > ERROR_TRUNCATE_LENGTH:
+        first_line = first_line[:ERROR_TRUNCATE_LENGTH]
+        truncated = True
+    return first_line + ERROR_TRUNCATE_SUFFIX if truncated else first_line
+
 
 def raw_text_logging_enabled() -> bool:
     """GATEWAY_LOG_RAW_TEXT env flag -- default disabled (false)."""
@@ -209,10 +239,11 @@ def _success_row(kwargs, response_obj, start_time, end_time) -> dict:
 
 def _failure_row(kwargs, start_time, end_time) -> dict:
     row = _base_row(kwargs, start_time, end_time)
+    error_text = str(kwargs.get("exception") or "")
     row.update(
         {
             "status": "failure",
-            "error": str(kwargs.get("exception") or ""),
+            "error": error_text if raw_text_logging_enabled() else _truncate_error(error_text),
         }
     )
     return row
