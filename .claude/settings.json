@@ -10,13 +10,20 @@
           { "type": "command", "command": "python tools/dispatch_gate.py" },
           { "type": "command", "command": "python tools/critic_snapshot.py" }
         ]
+      },
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          { "type": "command", "command": "python tools/hygiene_gate.py" }
+        ]
       }
     ],
     "PostToolUse": [
       {
         "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell",
         "hooks": [
-          { "type": "command", "command": "python tools/dod_track.py" }
+          { "type": "command", "command": "python tools/dod_track.py" },
+          { "type": "command", "command": "python tools/journal_echo.py" }
         ]
       }
     ],

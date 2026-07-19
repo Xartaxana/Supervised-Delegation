@@ -578,7 +578,8 @@ def test_boot_budget_breach_includes_hint_and_top3(tmp_path):
     total = 60000 + 30000 + 20000 + 100
     assert total > sc.BOOT_BREACH_THRESHOLD
     assert lines[0] == (
-        f"BOOT BUDGET: {total} bytes / 100000 (4 files) BREACH -> run boot-diet skill"
+        f"BOOT BUDGET: {total} bytes / 100000 (4 files) BREACH -> boot-diet due "
+        "(D-0068; report first, operator word starts it)"
     )
     assert lines[1] == "  60000  README.md"
     assert lines[2] == "  30000  PROJECT_CHARTER.md"
@@ -830,3 +831,177 @@ def test_build_context_lines_shows_open_dispatch(tmp_path):
     assert len(lines) <= sc.MAX_LINES
     for line in lines:
         assert line.isascii()
+
+
+# ==== closes:t-NNN marker convention (ported from HQ 2026-07-20) =======
+
+
+def test_open_dispatches_closes_marker_in_later_lifecycle_event_closes_delegated():
+    # A closes: token can sit in the notes of ANY later event, including
+    # a lifecycle event for a DIFFERENT task -- t-002's own event stays
+    # closed too (its last lifecycle event is 'rejected', not 'delegated').
+    events = [
+        _event("delegated", ts="2026-07-10T08:00:00", agent="builder", task_id="t-001"),
+        _event("rejected", ts="2026-07-10T09:00:00", agent="builder", task_id="t-002",
+               attempt=1, failure_class="spec", notes="closes:t-001"),
+    ]
+    assert sc.open_dispatches(events) == []
+
+
+def test_open_dispatches_closes_marker_in_non_lifecycle_event_closes():
+    # calibrated is outside _OPEN_LIFECYCLE_EVENTS -- it must not open or
+    # close anything BY ITS TYPE, but its notes are still scanned.
+    events = [
+        _event("delegated", ts="2026-07-10T08:00:00", agent="builder", task_id="t-001"),
+        _event("calibrated", ts="2026-07-10T09:00:00", notes="closes:t-001"),
+    ]
+    assert sc.open_dispatches(events) == []
+
+
+def test_open_dispatches_multiple_closes_tokens_in_one_notes():
+    events = [
+        _event("delegated", ts="2026-07-10T08:00:00", agent="builder", task_id="t-001"),
+        _event("delegated", ts="2026-07-10T08:05:00", agent="scout", task_id="t-002"),
+        _event("calibrated", ts="2026-07-10T09:00:00", notes="closes:t-001 closes:t-002"),
+    ]
+    assert sc.open_dispatches(events) == []
+
+
+def test_open_dispatches_delegated_after_closes_marker_reopens():
+    # Retry/replacement: a delegated LATER than the marker reopens the
+    # task, same as a retry does past a rejected event.
+    events = [
+        _event("delegated", ts="2026-07-10T08:00:00", agent="builder", task_id="t-001"),
+        _event("calibrated", ts="2026-07-10T08:30:00", notes="closes:t-001"),
+        _event("delegated", ts="2026-07-10T09:00:00", agent="builder", task_id="t-001", attempt=2),
+    ]
+    opens = sc.open_dispatches(events)
+    assert len(opens) == 1
+    assert opens[0]["ts"] == "2026-07-10T09:00:00"
+
+
+def test_open_dispatches_closes_marker_on_nonexistent_task_is_harmless():
+    events = [
+        _event("delegated", ts="2026-07-10T08:00:00", agent="builder", task_id="t-001"),
+        _event("calibrated", ts="2026-07-10T09:00:00", notes="closes:t-999"),
+    ]
+    opens = sc.open_dispatches(events)
+    assert len(opens) == 1
+    assert opens[0]["task_id"] == "t-001"
+
+
+# ---- closes: marker format boundaries (exact, like replaces_worker:) --
+
+
+def test_open_dispatches_closes_marker_trailing_comma_still_closes():
+    events = [
+        _event("delegated", ts="2026-07-10T08:00:00", agent="builder", task_id="t-133"),
+        _event("calibrated", ts="2026-07-10T09:00:00", notes="closes:t-133, done"),
+    ]
+    assert sc.open_dispatches(events) == []
+
+
+def test_open_dispatches_closes_marker_space_after_colon_does_not_close():
+    events = [
+        _event("delegated", ts="2026-07-10T08:00:00", agent="builder", task_id="t-133"),
+        _event("calibrated", ts="2026-07-10T09:00:00", notes="closes: t-133"),
+    ]
+    opens = sc.open_dispatches(events)
+    assert len(opens) == 1
+    assert opens[0]["task_id"] == "t-133"
+
+
+def test_open_dispatches_closes_marker_wrong_prefix_does_not_close():
+    events = [
+        _event("delegated", ts="2026-07-10T08:00:00", agent="builder", task_id="t-133"),
+        _event("calibrated", ts="2026-07-10T09:00:00", notes="closes:x-133"),
+    ]
+    opens = sc.open_dispatches(events)
+    assert len(opens) == 1
+    assert opens[0]["task_id"] == "t-133"
+
+
+def test_open_dispatches_closes_marker_wrong_case_does_not_close():
+    events = [
+        _event("delegated", ts="2026-07-10T08:00:00", agent="builder", task_id="t-133"),
+        _event("calibrated", ts="2026-07-10T09:00:00", notes="CLOSES:t-133"),
+    ]
+    opens = sc.open_dispatches(events)
+    assert len(opens) == 1
+    assert opens[0]["task_id"] == "t-133"
+
+
+def test_open_dispatches_closes_marker_inside_longer_word_does_not_close():
+    # An unanchored regex would match "closes:" INSIDE "discloses:" too --
+    # the dangerous direction, a silent false close of a task nobody
+    # meant to close. Left-anchor ((?<!\w)) must reject this.
+    events = [
+        _event("delegated", ts="2026-07-10T08:00:00", agent="builder", task_id="t-001"),
+        _event("calibrated", ts="2026-07-10T09:00:00", notes="discloses:t-001"),
+    ]
+    opens = sc.open_dispatches(events)
+    assert len(opens) == 1
+    assert opens[0]["task_id"] == "t-001"
+
+
+def test_open_dispatches_closes_marker_at_start_of_notes_closes():
+    events = [
+        _event("delegated", ts="2026-07-10T08:00:00", agent="builder", task_id="t-001"),
+        _event("calibrated", ts="2026-07-10T09:00:00", notes="closes:t-001 done"),
+    ]
+    assert sc.open_dispatches(events) == []
+
+
+def test_open_dispatches_closes_marker_after_punctuation_closes():
+    # A non-word character (here: an opening parenthesis) immediately
+    # before "closes:" is legal -- only a preceding word character
+    # (letter/digit/underscore, as in "discloses:") is rejected.
+    events = [
+        _event("delegated", ts="2026-07-10T08:00:00", agent="builder", task_id="t-001"),
+        _event("calibrated", ts="2026-07-10T09:00:00", notes="see (closes:t-001) for context"),
+    ]
+    assert sc.open_dispatches(events) == []
+
+
+def test_open_dispatches_empty_notes_harmless():
+    events = [
+        _event("delegated", ts="2026-07-10T08:00:00", agent="builder", task_id="t-001", notes=""),
+    ]
+    opens = sc.open_dispatches(events)
+    assert len(opens) == 1
+    assert opens[0]["task_id"] == "t-001"
+
+
+def test_open_dispatches_absent_notes_harmless():
+    events = [
+        _event("delegated", ts="2026-07-10T08:00:00", agent="builder", task_id="t-001"),
+    ]
+    opens = sc.open_dispatches(events)
+    assert len(opens) == 1
+    assert opens[0]["task_id"] == "t-001"
+
+
+def test_open_dispatches_closes_marker_in_own_delegated_notes_closes_via_contract():
+    # Documented contract: a closes:t-X token in the notes of task X's
+    # OWN delegated event is a mis-written journal line, but the
+    # documented deterministic behavior is that the marker wins at the
+    # tie -- (ts, idx, 1) > (ts, idx, 0) -- so this delegated is treated
+    # as already closed, not open.
+    events = [
+        _event("delegated", ts="2026-07-10T08:00:00", agent="builder", task_id="t-001",
+               notes="closes:t-001"),
+    ]
+    assert sc.open_dispatches(events) == []
+
+
+def test_open_dispatches_non_string_notes_does_not_raise():
+    # Adversarial input: a malformed journal line where notes ended up
+    # a number or None in JSON (not the contractual string) must not
+    # crash open_dispatches() with a TypeError from re.findall.
+    events = [
+        _event("delegated", ts="2026-07-10T08:00:00", agent="builder", task_id="t-001", notes=12345),
+        _event("calibrated", ts="2026-07-10T09:00:00", notes=None),
+    ]
+    opens = sc.open_dispatches(events)
+    assert len(opens) == 1
+    assert opens[0]["task_id"] == "t-001"

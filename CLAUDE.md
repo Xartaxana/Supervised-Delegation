@@ -85,7 +85,11 @@ separately in this deployment).
    own; Lead checks for overlap before launching. Parallel SESSIONS in
    the same repo are the same class of hazard: don't touch or commit
    another session's uncommitted paths (no-silent-reuse rule;
-   parallel-session collision finding).
+   parallel-session collision finding). A cross-deployment queue item
+   exists only if it is written, in the same move, into a carrier that
+   the TARGET deployment reads at boot (D-0082); a session's own
+   journal notes or findings log are not such a carrier — an item
+   living only there has not actually been handed over.
 5. Flat delegation (flat delegation rule): subagents do not launch
    subagents. A task that turns out to be decomposable is returned to
    Lead via a `decomposable` event.
@@ -108,7 +112,14 @@ separately in this deployment).
    with the worker's model: "haiku: …" / "sonnet: …" / "opus: …" (a
    non-standard agent: its actual model) — the operator sees the tier
    in the background-task list, the same self-declaration as the
-   journal's `model` field (reconciled by calibration check 4).
+   journal's `model` field (reconciled by calibration check 4). A tier
+   REQUIREMENT closes by MEASUREMENT, not by declaration alone
+   (D-0083): when a journal line carries a `worker_ref` of the form
+   `agent:<id>`, the `journal_echo` hook measures the worker's actual
+   transcript models and warns on a MISMATCH against the declared
+   model; a mismatch is resolved — relaunch, an honest record via
+   `basis`, or escalation — before the result is used as that tier's
+   word.
 8. Universal skip rule (silent-skip violation class): a task that
    maps to a cheap tier, done by Lead itself, is legitimate ONLY with
    a `dispatch_skipped` event (agent = the skipped tier, reason
@@ -206,7 +217,10 @@ separately in this deployment).
    no DoD. Completeness of the DoD and of the manifest is the
    DISPATCHER's duty BEFORE sending — checking against this rule is
    part of composing the dispatch, not a step delegated to the
-   worker's judgment. A worker returning a DoD-less (or, for a
+   worker's judgment. The DoD itself is written INLINE in the dispatch
+   prompt — named acceptance criteria plus the exact verification run
+   whose output becomes the witness; a bare pointer to a spec file or
+   to an earlier event is NOT a DoD. A worker returning a DoD-less (or, for a
    writing/parallel dispatch, manifest-less) dispatch is an emergency
    net, not the normal cycle: each return is a double context switch;
    frequent returns are a coordinator spec-discipline defect, worth
@@ -248,8 +262,12 @@ launch (a background-task id, a job id, `cli:<ts>`, `retro:<...>`) —
 the value exists only after launch, there is nothing to fill in ahead
 of time. Open dispatches are reconciled at both session boundaries —
 the SessionStart hook and the session-handoff check — worker alive /
-result pending / phantom; a phantom is closed with a note on the next
-event's `notes` field.
+result pending / phantom; a phantom is closed by a bare
+`closes:<task-id>` token (several allowed in one `notes` field) in the
+`notes` of any LATER event, lifecycle or not — the SessionStart hook's
+open-dispatch scan reads ONLY this literal token; a prose-only closing
+note ("closing t-042: ...") is invisible to it and leaves the task
+showing as open.
 
 Every event line — including `journal_created` and `lead_degraded` —
 carries five base fields checked by `tools/journal_validator.py`:
@@ -288,12 +306,29 @@ a RETRO pair: append `delegated`/`accepted` NOW, with the current
 the pattern mirrors the retroactive `lead_degraded` of the Lead
 degradation section, and calibration watches the retro-entry stream.
 
+Event SHAPES — the typed fields each event adds on top of the five
+base fields (ts/event/agent/category/notes), at a glance:
+
+| event | adds on top of the base fields |
+|---|---|
+| `delegated` | `task_id`, `model`, `worker_ref`; a REPEAT on an open task is legitimate only as: a critic-entry / a retry with `attempt`>=2 after `rejected` / a `replaces_worker:<prev worker_ref>` bare token in `notes` |
+| `accepted` | `task_id`, `model`, `by` (a bare tier word); + `basis` ("critic" / "queued-to-lead") when the acceptor is not strictly above the executor; + `witness` (the verbatim run output) on builder work |
+| `rejected` | `task_id`, `model`, `by`, `attempt` (number), `failure_class` ∈ spec/capability/recon/tooling |
+| `escalated` | `task_id` (must already exist earlier in the file), `model` |
+| `defect_found` | `task_id`, `ref` (the task_id of the original `accepted`) |
+| `dispatch_skipped` | reason inside `notes` (no extra field) |
+
 The `model` field is mandatory for delegated/escalated/accepted/
 rejected — a self-declaration by Lead; calibration reconciles it
 against transcripts (usage reports); a discrepancy is itself an event
 (a self-declared-model discrepancy is itself a calibration event).
-NEW log lines are validated by a pre-commit gate (tools/
-journal_validator.py): append-only, typed fields, ts-monotonicity and
+NEW log lines are validated at TWO points, not one (tools/
+journal_validator.py): the pre-commit gate on `git commit`, and the
+WRITE moment — a PostToolUse hook (`journal_echo`) that re-validates
+the file's newest lines immediately after they land on disk and warns
+on a defective line before the session ever reaches a commit, closing
+the gap where a session that never commits never meets the gate at
+all. Both points share the same checks: append-only, typed fields, ts-monotonicity and
 a ban on ts from the future (the timestamp finding above), task_id
 novelty (a repeat `delegated` on an open task is legitimate from a
 different tier — a critic-entry — or as a retry with `attempt`>=2

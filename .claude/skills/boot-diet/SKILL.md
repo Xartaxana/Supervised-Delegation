@@ -10,7 +10,11 @@ rule): every session reads it. This skill is the sole owner of the
 reaction order to a breach; session-handoff's check 4 triggers it and
 does not duplicate its steps. The order is strict: cheap, reversible
 moves (archiving, deduplication) BEFORE expensive, irreversible ones
-(cutting into operational homes).
+(cutting into operational homes). In a FRESH session, this skill runs
+only AFTER the Boot Report has been delivered and the operator has
+given the word to proceed — a flagged breach is a line for the Boot
+Report's Next Required Action, not a self-authorizing trigger to start
+the diet before anyone has seen the report.
 
 ## Steps
 

@@ -7,8 +7,10 @@ with deterministic budget enforcement and a deterministic analytics
 layer, plus one small local model that narrates the analytics.
 
 Every request -- successful or failed -- is recorded in a SQLite log
-that the Ledger consumes. Raw prompt text is stored because the
-context-repetition ratio needs it.
+that the Ledger consumes. By default the `prompt`/`response` columns
+hold a masking marker, not the actual conversation text -- see "Raw
+text logging" below; every accounting field (model, tokens, cost,
+category, traffic_kind) is always recorded in full regardless.
 
 The Guard enforces daily per-model budgets deterministically inside
 the request path: a `warn` event at 80% of budget (once per model per
@@ -220,3 +222,35 @@ Table `requests`: `ts`, `model` (gateway alias the client asked for),
 `provider_model` (resolved underlying model), `status` (success/failure), `latency_ms`,
 `prompt_tokens`, `completion_tokens`, `total_tokens`, `cost_usd`,
 `prompt` (messages JSON), `response` (completion text), `error`.
+
+## Raw text logging
+
+`GATEWAY_LOG_RAW_TEXT` controls whether the `prompt`/`response`
+columns store the actual conversation text. Default: **disabled**
+(unset, or any value other than `1`/`true`/`yes`/`on`,
+case-insensitive). When disabled, both columns hold the literal
+marker `[raw text logging disabled]` instead of the real text; every
+other field (model, tokens, cost, ts, category, traffic_kind) is
+still recorded in full, so budgets, quotas, and the Ledger's
+per-category cost/token accounting are unaffected. `sqlite_logger.py`
+prints one line to stderr at start-up -- `raw text logging: ENABLED`
+or `raw text logging: disabled` -- so the active mode is visible in
+the proxy's own boot output.
+
+Two Ledger features specifically DO need raw text and degrade to a
+meaningless (not crashing) signal while it is masked, because every
+masked row has identical `prompt` content: `metrics.py`'s
+context-repetition ratio (a common-prefix comparison across
+consecutive requests) and its keyword-based `categorize()` fallback
+for rows with no explicit `metadata.category`.
+
+Set `GATEWAY_LOG_RAW_TEXT=true` only deliberately, for a Shadow
+Evaluation session (`shadow_eval.py` needs the real prompt text to
+replay it: masked rows fail JSON parsing and are silently skipped,
+so an empty replay sample with no error usually means raw logging
+was OFF while the traffic was captured) or similar analysis -- **the log then contains raw prompt
+text, which may be sensitive** (anything a caller sent through the
+gateway, verbatim). Turn it back off once the session is done.
+`requests.db` has no built-in TTL or purge for raw content; this
+toolkit ships no purge mechanism for it either -- clearing out raw
+text after a replay session is the operator's duty.

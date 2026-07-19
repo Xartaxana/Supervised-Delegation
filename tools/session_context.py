@@ -17,13 +17,22 @@ trusting its own boot picture:
   its LAST lifecycle event (delegated/accepted/rejected/escalated/
   decomposable -- see _OPEN_LIFECYCLE_EVENTS) is `delegated`; anything
   else (dispatch_skipped, defect_found, lead_*, journal_created,
-  calibrated) neither opens nor closes a task and is ignored by this
-  scan.
+  calibrated) neither opens nor closes a task BY ITS OWN TYPE -- but its
+  `notes` field is still scanned for a `closes:<task-id>` token (see
+  _CLOSES_RE below), which DOES close a task regardless of the event's
+  own type.
 
 A SessionStart hook registered in .claude/settings.json is a
 self-activating enforcement file: it was delivered under a sibling
 filename and placed on this live path only at review/acceptance time,
 not by whoever wrote it.
+
+Ported from HQ 2026-07-20: adds the `closes:<task-id>` token scan
+(previously, this hook read only event TYPES, so a plain-English
+closing note in a later event's `notes` was invisible to it and
+produced a false OPEN DISPATCH line for a task already closed out in
+prose) and tightens the BOOT BUDGET breach line so it cannot be
+misread as a self-authorizing command (see boot_budget_lines()).
 
 Hard constraints (all load-bearing):
 - NEVER breaks session start: any exception anywhere below collapses to
@@ -120,8 +129,41 @@ _MODEL_TIER_SUBSTRINGS = (
 # Events that open/close a dispatch's lifecycle. A task_id is OPEN iff
 # its LAST such event is 'delegated'. Events outside this set
 # (dispatch_skipped, defect_found, lead_*, journal_created, calibrated)
-# neither open nor close a task.
+# neither open nor close a task BY THEIR OWN TYPE -- but see _CLOSES_RE
+# below: their `notes` field is still scanned for closes: tokens.
 _OPEN_LIFECYCLE_EVENTS = {"delegated", "accepted", "rejected", "escalated", "decomposable"}
+
+# A bare `closes:<task-id>` token in ANY event's notes closes that
+# task_id's open dispatch (CLAUDE.md's own convention for closing an
+# open dispatch inside a later event's notes). The format is
+# deliberately exact -- no whitespace after the colon, lowercase
+# literal, the id must start with `t-` -- the same "bare token right
+# after the colon" contract as `replaces_worker:` (a regex takes the
+# first non-whitespace token, so loose punctuation right after the
+# marker breaks the match by design).
+#
+# Left-anchored: an unanchored `closes:` substring would otherwise
+# match INSIDE a longer word too -- `discloses:t-001` or
+# `encloses:t-133` both contain the literal "closes:" and would
+# silently close a task nobody meant to close (the dangerous
+# direction: a false CLOSE hides a real phantom dispatch). `(?<!\w)`
+# requires the character immediately before "closes:" to be either
+# absent (start of string) or a non-word character -- so start-of-notes
+# and punctuation/whitespace before the token are both legal, but a
+# preceding letter/digit/underscore is not.
+_CLOSES_RE = re.compile(r"(?<!\w)closes:(t-\d+)")
+
+
+def _closes_task_ids(notes) -> list:
+    """Extracts closes:t-NNN task ids from a notes field via findall.
+    Returns [] for anything that is not a string (missing notes, or a
+    malformed journal line where notes ended up a number/None in JSON)
+    -- must never raise; open_dispatches() has no local try/except
+    either, so this has to be safe on its own rather than relying on a
+    boundary above it."""
+    if not isinstance(notes, str):
+        return []
+    return _CLOSES_RE.findall(notes)
 
 
 def repo_root() -> Path:
@@ -202,10 +244,39 @@ def open_dispatches(events: list) -> list:
     tasks WITHOUT an accepted, 'last' is judged by (ts, file position):
     max ts wins, file position only breaks exact ts ties (retro pairs
     share one ts, and the closing line is written below the delegated
-    one, so on a tie the later line wins)."""
+    one, so on a tie the later line wins).
+
+    Ported from HQ 2026-07-20: a plain-English closing note in a later
+    event's `notes` used to be invisible to this scan (it only ever
+    read event TYPE), producing false OPEN DISPATCH lines for tasks
+    already closed out in the journal's own prose. Fix: a bare
+    `closes:t-NNN` token (see _CLOSES_RE) in ANY event's notes --
+    lifecycle or not, e.g. `calibrated`, `dispatch_skipped` -- is a
+    closing TOUCH of that task, keyed by the marker-carrying event's own
+    (ts, file_idx). Per task_id, every touch is compared as
+    (ts, idx, sub): a real lifecycle event contributes sub=0, a closes:
+    marker contributes sub=1 at the SAME (ts, idx) as the event it sits
+    in -- so at an exact tie the marker outranks the lifecycle event it
+    came from. The task is OPEN iff its overall-latest touch is a real
+    `delegated` event: a later marker closes it (even one sitting in an
+    unrelated event's notes); a later `delegated` (retry/replacement)
+    reopens it past an earlier marker; and -- documented as a
+    deliberate contract, not a bug -- a closes:t-X token placed in t-X's
+    OWN delegated event's notes closes that same event, because its
+    marker-touch key ties the lifecycle key and the marker wins ties.
+    `accepted` does not participate in this ts/idx comparison at all: it
+    stays the unconditional law above, checked first and independent of
+    any marker."""
     accepted_tids = set()
-    last = {}  # tid -> (ts_str, file_idx, event_dict)
+    lifecycle_last = {}  # tid -> (ts_str, file_idx, event_dict): last real lifecycle touch
+    close_last = {}  # tid -> (ts_str, file_idx): last closes: marker touch
     for idx, e in enumerate(events):
+        ts_key = (str(e.get("ts") or ""), idx)
+
+        for closed_tid in _closes_task_ids(e.get("notes")):
+            if closed_tid not in close_last or ts_key > close_last[closed_tid]:
+                close_last[closed_tid] = ts_key
+
         event = e.get("event")
         if event not in _OPEN_LIFECYCLE_EVENTS:
             continue
@@ -214,13 +285,20 @@ def open_dispatches(events: list) -> list:
             continue
         if event == "accepted":
             accepted_tids.add(tid)
-        key = (str(e.get("ts") or ""), idx)
-        if tid not in last or key > last[tid][:2]:
-            last[tid] = (key[0], key[1], e)
-    opens = [
-        t[2] for tid, t in last.items()
-        if tid not in accepted_tids and t[2].get("event") == "delegated"
-    ]
+            continue
+        if tid not in lifecycle_last or ts_key > lifecycle_last[tid][:2]:
+            lifecycle_last[tid] = (ts_key[0], ts_key[1], e)
+
+    opens = []
+    for tid, (ts, idx, e) in lifecycle_last.items():
+        if tid in accepted_tids:
+            continue
+        if e.get("event") != "delegated":
+            continue
+        marker = close_last.get(tid)
+        if marker is not None and marker >= (ts, idx):
+            continue
+        opens.append(e)
     opens.sort(key=lambda e: str(e.get("ts") or ""))
     return opens
 
@@ -469,7 +547,11 @@ def boot_budget_lines(root: Path) -> list:
     missing_suffix = "".join(f" [missing: {name}]" for name in missing)
 
     if total > BOOT_BREACH_THRESHOLD:
-        status_suffix = " BREACH -> run boot-diet skill"
+        # Informs the Boot Report's Next Required Action line; NOT an
+        # auto-run command -- boot recovery is not work authorization by
+        # itself (a breach line is a flag for the report, not a silent
+        # trigger to start the diet before the operator has seen it).
+        status_suffix = " BREACH -> boot-diet due (D-0068; report first, operator word starts it)"
     elif total > BOOT_WARN_THRESHOLD:
         status_suffix = " WARN"
     else:

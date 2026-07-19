@@ -2,7 +2,25 @@
 
 Every request passing through the gateway is recorded in a SQLite log.
 The schema already contains what the Ledger (Phase 1 step 3) needs,
-including raw prompt text for the context-repetition ratio.
+including raw prompt/response text for the context-repetition ratio --
+but writing that raw text is now OPT-IN (safe-telemetry default,
+operator decision 2026-07-16, port-queue item 13): by default the
+`prompt`/`response` columns hold a short marker instead of the actual
+conversation text, while every accounting/ledger field (model,
+tokens, cost, ts, category, traffic_kind) is written unconditionally
+-- cost/budget/category accounting never depends on raw text, only
+the Ledger's context-repetition ratio and keyword categorize() do
+(see metrics.py; both degrade to a meaningless signal, not a crash,
+when raw text is masked -- see gateway/README.md).
+
+Set GATEWAY_LOG_RAW_TEXT=true to store the real prompt/response text
+(needed for Shadow Evaluation replay and the context-repetition
+ratio). Truthy values: "1", "true", "yes", "on" (case-insensitive);
+anything else, including unset, is disabled. Masking writes a marker
+STRING (not NULL) into the two raw-text columns, chosen over NULL so
+a masked row is visibly distinct from a legitimate NULL (e.g. a
+failure row with no response, or a call with no messages) when
+inspecting requests.db directly.
 
 The database path is taken from the GATEWAY_DB_PATH environment variable,
 defaulting to requests.db next to this file.
@@ -11,9 +29,25 @@ defaulting to requests.db next to this file.
 import json
 import os
 import sqlite3
+import sys
 from pathlib import Path
 
 from litellm.integrations.custom_logger import CustomLogger
+
+# Marker written to the `prompt`/`response` columns when raw text
+# logging is disabled (the default). See module docstring.
+RAW_TEXT_DISABLED_MARKER = "[raw text logging disabled]"
+
+
+def raw_text_logging_enabled() -> bool:
+    """GATEWAY_LOG_RAW_TEXT env flag -- default disabled (false)."""
+    return os.environ.get("GATEWAY_LOG_RAW_TEXT", "false").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS requests (
@@ -108,6 +142,7 @@ def _base_row(kwargs, start_time, end_time) -> dict:
     metadata = litellm_params.get("metadata") or {}
     # Through the proxy, kwargs["model"] is the resolved provider model;
     # the gateway alias the client asked for is metadata["model_group"].
+    prompt_text = json.dumps(messages, ensure_ascii=False) if messages else None
     return {
         "ts": start_time.isoformat() if start_time else None,
         "model": metadata.get("model_group") or kwargs.get("model"),
@@ -115,7 +150,7 @@ def _base_row(kwargs, start_time, end_time) -> dict:
         "latency_ms": (end_time - start_time).total_seconds() * 1000
         if start_time and end_time
         else None,
-        "prompt": json.dumps(messages, ensure_ascii=False) if messages else None,
+        "prompt": prompt_text if raw_text_logging_enabled() else RAW_TEXT_DISABLED_MARKER,
         "traffic_kind": metadata.get("traffic_kind") or "real",
         "category": metadata.get("category"),
     }
@@ -156,6 +191,7 @@ def _success_row(kwargs, response_obj, start_time, end_time) -> dict:
     usage = getattr(response_obj, "usage", None)
     choices = getattr(response_obj, "choices", None)
     cache_creation, cache_read = _cache_tokens(usage)
+    response_text = choices[0].message.content if choices else None
     row.update(
         {
             "status": "success",
@@ -163,7 +199,7 @@ def _success_row(kwargs, response_obj, start_time, end_time) -> dict:
             "completion_tokens": getattr(usage, "completion_tokens", None),
             "total_tokens": getattr(usage, "total_tokens", None),
             "cost_usd": kwargs.get("response_cost"),
-            "response": choices[0].message.content if choices else None,
+            "response": response_text if raw_text_logging_enabled() else RAW_TEXT_DISABLED_MARKER,
             "cache_creation_input_tokens": cache_creation,
             "cache_read_input_tokens": cache_read,
         }
@@ -183,6 +219,19 @@ def _failure_row(kwargs, start_time, end_time) -> dict:
 
 
 class SQLiteLogger(CustomLogger):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Self-declaration of the raw-text-logging posture (safe-telemetry
+        # requirement 4): one honest line to stderr at logger start-up, so
+        # an operator staring at the proxy's boot output sees which mode is
+        # live without having to go read this file or requests.db. Printed
+        # per-instance (not once at import) so it always reflects the
+        # GATEWAY_LOG_RAW_TEXT value in effect when THIS logger starts --
+        # relevant for tests, which construct fresh instances under
+        # monkeypatched env rather than reloading the module.
+        state = "ENABLED" if raw_text_logging_enabled() else "disabled"
+        print(f"raw text logging: {state}", file=sys.stderr)
+
     def log_success_event(self, kwargs, response_obj, start_time, end_time):
         _insert(_success_row(kwargs, response_obj, start_time, end_time))
 

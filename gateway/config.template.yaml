@@ -72,3 +72,14 @@ model_list:
 
 litellm_settings:
   callbacks: [sqlite_logger.logger_instance, guard.guard_instance]
+
+# sqlite_logger.py raw-text logging: GATEWAY_LOG_RAW_TEXT (env var, not
+# a config key here) controls whether the requests.db `prompt`/
+# `response` columns store real conversation text. Default disabled --
+# both columns hold a masking marker instead; accounting fields
+# (model, tokens, cost, category, traffic_kind) are unaffected either
+# way. Set GATEWAY_LOG_RAW_TEXT=true only deliberately, e.g. for a
+# Shadow Evaluation session: the log then contains raw prompt text,
+# which may be sensitive -- see gateway/README.md "Raw text logging"
+# for the full warning and the purge note (no built-in TTL/purge;
+# clearing raw content after a replay session is the operator's duty).

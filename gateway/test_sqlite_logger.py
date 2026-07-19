@@ -34,7 +34,11 @@ def wait_for_row(path, status, timeout=10):
     raise AssertionError(f"no '{status}' row appeared in {path} within {timeout}s")
 
 
-def test_success_is_logged(db):
+def test_success_is_logged(db, monkeypatch):
+    # This test asserts on the real prompt/response text, so it must opt
+    # into raw-text logging explicitly -- the default is now masked (see
+    # test_raw_text_logging_disabled_by_default below).
+    monkeypatch.setenv("GATEWAY_LOG_RAW_TEXT", "true")
     import litellm
     from sqlite_logger import logger_instance
 
@@ -382,6 +386,140 @@ def test_metadata_category_is_logged(db):
     conn.row_factory = sqlite3.Row
     row = conn.execute("SELECT * FROM requests WHERE status = 'success'").fetchone()
     assert row["category"] == "coding"
+
+
+def test_raw_text_logging_disabled_by_default(db, monkeypatch):
+    """Safe telemetry default (GATEWAY_LOG_RAW_TEXT unset): prompt/response
+    columns hold the marker, not the conversation text, while every
+    accounting field is still populated in full."""
+    monkeypatch.delenv("GATEWAY_LOG_RAW_TEXT", raising=False)
+    import litellm
+    from sqlite_logger import RAW_TEXT_DISABLED_MARKER, logger_instance
+
+    litellm.callbacks = [logger_instance]
+    litellm.completion(
+        model="gpt-3.5-turbo",
+        messages=[{"role": "user", "content": "this is a secret prompt"}],
+        mock_response="this is a secret response",
+        metadata={"category": "coding"},
+    )
+
+    wait_for_row(db, "success")
+    conn = sqlite3.connect(db)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM requests WHERE status = 'success'").fetchone()
+
+    assert row["prompt"] == RAW_TEXT_DISABLED_MARKER
+    assert row["response"] == RAW_TEXT_DISABLED_MARKER
+    assert "secret" not in row["prompt"]
+    assert "secret" not in row["response"]
+    # accounting/ledger fields are unaffected by the flag
+    assert row["model"] == "gpt-3.5-turbo"
+    assert row["total_tokens"] is not None
+    assert row["latency_ms"] is not None
+    assert row["category"] == "coding"
+
+
+@pytest.mark.parametrize("flag_value", ["false", "0", "no", "off", "garbage", ""])
+def test_raw_text_logging_disabled_for_falsy_and_unrecognized_values(db, monkeypatch, flag_value):
+    """Anything other than a recognized truthy value is treated as
+    disabled -- fail closed, not fail open, on a malformed flag."""
+    monkeypatch.setenv("GATEWAY_LOG_RAW_TEXT", flag_value)
+    from sqlite_logger import RAW_TEXT_DISABLED_MARKER, logger_instance
+    import litellm
+
+    litellm.callbacks = [logger_instance]
+    litellm.completion(
+        model="gpt-3.5-turbo",
+        messages=[{"role": "user", "content": "ping"}],
+        mock_response="pong",
+    )
+
+    wait_for_row(db, "success")
+    conn = sqlite3.connect(db)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM requests WHERE status = 'success'").fetchone()
+    assert row["prompt"] == RAW_TEXT_DISABLED_MARKER
+    assert row["response"] == RAW_TEXT_DISABLED_MARKER
+
+
+@pytest.mark.parametrize("flag_value", ["true", "1", "yes", "on", "TRUE", "True"])
+def test_raw_text_logging_enabled_stores_real_content(db, monkeypatch, flag_value):
+    """GATEWAY_LOG_RAW_TEXT truthy (any case/spelling variant) stores the
+    real prompt/response text, not the marker."""
+    monkeypatch.setenv("GATEWAY_LOG_RAW_TEXT", flag_value)
+    from sqlite_logger import logger_instance
+    import litellm
+
+    litellm.callbacks = [logger_instance]
+    litellm.completion(
+        model="gpt-3.5-turbo",
+        messages=[{"role": "user", "content": "real prompt text"}],
+        mock_response="real response text",
+    )
+
+    wait_for_row(db, "success")
+    conn = sqlite3.connect(db)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM requests WHERE status = 'success'").fetchone()
+    assert row["response"] == "real response text"
+    assert json.loads(row["prompt"]) == [{"role": "user", "content": "real prompt text"}]
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "",  # empty text
+        "Привет, мир! éè \U0001F600",  # non-ASCII incl. surrogate-pair emoji
+        "x" * 200_000,  # very long text
+    ],
+    ids=["empty", "non-ascii", "very-long"],
+)
+def test_raw_text_logging_enabled_handles_boundary_inputs(db, monkeypatch, content):
+    """With logging enabled, boundary-sized/encoded content round-trips
+    through the DB without the logger raising."""
+    monkeypatch.setenv("GATEWAY_LOG_RAW_TEXT", "true")
+    from sqlite_logger import logger_instance
+    import litellm
+
+    litellm.callbacks = [logger_instance]
+    litellm.completion(
+        model="gpt-3.5-turbo",
+        messages=[{"role": "user", "content": content}],
+        mock_response=content or "(empty)",
+    )
+
+    wait_for_row(db, "success")
+    conn = sqlite3.connect(db)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT * FROM requests WHERE status = 'success'").fetchone()
+    assert json.loads(row["prompt"]) == [{"role": "user", "content": content}]
+    assert row["response"] == (content or "(empty)")
+
+
+def test_startup_banner_reports_disabled_by_default(capsys, monkeypatch):
+    """Requirement 4: one honest stderr line at logger start-up naming
+    the active mode. Constructing a fresh SQLiteLogger() (rather than
+    relying on the module-level singleton created at import time) lets
+    this test observe both regimes under monkeypatched env."""
+    monkeypatch.delenv("GATEWAY_LOG_RAW_TEXT", raising=False)
+    import sqlite_logger
+
+    sqlite_logger.SQLiteLogger()
+    captured = capsys.readouterr()
+    assert "raw text logging" in captured.err.lower()
+    assert "disabled" in captured.err.lower()
+    assert "enabled" not in captured.err.lower()
+
+
+def test_startup_banner_reports_enabled_when_flag_true(capsys, monkeypatch):
+    monkeypatch.setenv("GATEWAY_LOG_RAW_TEXT", "true")
+    import sqlite_logger
+
+    sqlite_logger.SQLiteLogger()
+    captured = capsys.readouterr()
+    assert "raw text logging" in captured.err.lower()
+    assert "enabled" in captured.err.lower()
 
 
 def test_metadata_category_null_when_not_provided(db):
