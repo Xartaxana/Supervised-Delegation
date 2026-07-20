@@ -69,11 +69,22 @@ separately in this deployment).
    code gates work ahead of its own review.
 3. critic — a MANDATORY acceptance gate: builder diffs over roughly
    100 lines, or touching the data schema / core / money accounting;
-   unclear bugs — BEFORE Lead starts debugging them itself. Acceptance
+   unclear bugs — BEFORE Lead starts debugging them itself. The first
+   filter on EVERY diff is the executor's own self-run against its DoD
+   (rule 11); critic does not substitute for that. Acceptance
    still rests with Lead (flat delegation rule). Small diffs: a
    "critic: skipped, <reason>" note inside the `accepted` event is a
    waiver available ONLY to an acceptor whose tier is above the
-   executor's (role-vs-tier acceptance matrix). Critic-on-plan: when a
+   executor's (role-vs-tier acceptance matrix). TWO-LAYER CRITIC ENTRY
+   (two-layer review rule): a MECHANICAL layer — test re-runs, control values, smoke
+   matrices — is executed and attached to critic as a VERBATIM output
+   BEFORE its verdict (the executor of that layer is the submitting
+   builder or a script); critic's own zone is the VERDICT layer
+   (architecture, semantics, class-wide completeness); a cheap control
+   re-run of what's attached is legitimate, investigating the
+   mechanics by reading is not. A layer not attached: critic returns
+   the dispatcher a request for the layer, it does not execute it
+   itself. Critic-on-plan: when a
    recon deliverable will itself serve as the SPEC for implementation
    worth more than roughly 30 minutes of work, it gets a critic review
    of the PLAN before any code starts — not just a review of the code
@@ -90,6 +101,10 @@ separately in this deployment).
    the TARGET deployment reads at boot (D-0082); a session's own
    journal notes or findings log are not such a carrier — an item
    living only there has not actually been handed over.
+   4a. A task spanning 5 or more journal events, OR 2 or more
+   sessions, is tracked as a markdown DAG under docs/tasks/ (D-0080):
+   nodes/statuses/tiers as the carrier; a node's status moves in the
+   same turn as its journal event, not separately.
 5. Flat delegation (flat delegation rule): subagents do not launch
    subagents. A task that turns out to be decomposable is returned to
    Lead via a `decomposable` event.
@@ -124,7 +139,14 @@ separately in this deployment).
    maps to a cheap tier, done by Lead itself, is legitimate ONLY with
    a `dispatch_skipped` event (agent = the skipped tier, reason
    mandatory) — on any tier. Waiver: skipping critic on a small diff
-   is a note inside `accepted`. Lead-tier work per the table
+   is a note inside `accepted`. SMALL-WORK BATCHING (D-0081): a small
+   builder-class edit that does NOT block the next step is not
+   self-executed by the coordinator one at a time — it accumulates in
+   a session-scoped list and goes to builder as ONE batched dispatch
+   at a stage boundary (the large-cadence rule, rule 12; a
+   "small-work batch" marker in notes); self-execution with a skip
+   event stays legitimate only for an edit that blocks the current
+   step — the reason must name the blocker. Lead-tier work per the table
    (decomposition, specs, acceptance, architecture, policy) needs no
    skip event.
 9. Fix the class, not the instance (fix-the-class-not-the-instance
@@ -245,6 +267,19 @@ separately in this deployment).
    headless environment with no operator present gets a substitute —
    a proxy-escalation path — only as an explicit, named clause for
    that environment, not a silent default.
+
+12. The coordinator's cadence runs on LARGE moves, not a series of
+   small ones (the large-cadence rule; a finding: micro-cycles are the
+   chief cost sink and the main source of rushed mistakes): accepting
+   workers happens in a BATCH at a stage boundary (accepting
+   everything stays mandatory — flat delegation rule; the cadence
+   changes, not the obligation); one question carrying a list, instead
+   of a round of clarifications; journal append happens strictly at
+   the TAIL — anchored on the file's actual tail, not on memory of
+   what was written. Working down the boot-budget backlog happens as a
+   batch at handoff (boot-diet). The target is roughly 15 main-turns
+   per task — not a gate, a measured goal (a calibration check counts
+   it).
 
 ## Routing log — logs/routing-log.jsonl
 
