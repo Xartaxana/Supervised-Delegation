@@ -73,3 +73,39 @@ synthetic set is a snapshot, not a guarantee.
    pre-registered gap threshold that fires on its very first run).
    The instrument's own failure detector remains mandatory under the
    four-questions-per-mechanism rule (question (c)).
+
+8. **Subscription judge-subagent procedure (leaf-routing rule 13).**
+   CLAUDE.md's rule 13 recognizes a SECOND legitimate judge form
+   alongside the gateway alias above: a subscription judge-subagent,
+   used when there is no live proxy to call through. Calibrating it
+   follows rule 7's own logic, made concrete: dispatch the subagent
+   carrying `JUDGE_SYSTEM_PROMPT` (gateway/shadow_eval.py) delivered
+   VERBATIM — the literal system prompt string, never paraphrased and
+   never re-derived from memory ("act as an impartial judge...") —
+   against every pair in gateway/judge_calibration.json, and score its
+   verdicts against each pair's `verdict` key. The bar is FULL
+   agreement on the set (13/13 at this file's current count) before
+   the subagent is trusted for any real `accepted(basis: "judge")`; a
+   single miss disqualifies it — rule 5 ("escalate on evidence") still
+   governs the diagnosis, not a lowered bar. Record the run: date, the
+   subagent's bound model, the agreement score, and an explicit
+   confirmation that the delivered prompt was character-for-character
+   `JUDGE_SYSTEM_PROMPT` — a drifted prompt invalidates the run even at
+   13/13, because it calibrated a different judge than the one that
+   will actually run leaf acceptances. This record is the "equivalence
+   point" CLAUDE.md's rule 13 requires before either judge form is
+   trusted; a leaf-class `accepted(basis: "judge")` with no such record
+   on file is a self-certification finding (calibration check 20,
+   PROCESS/WEEKLY_CALIBRATION_PROTOCOL.md). Re-run the same procedure
+   whenever `JUDGE_SYSTEM_PROMPT` changes, the calibration set grows
+   (rule 2), or a different model is bound to the subagent.
+
+   The 13-pair set itself is NOT duplicated into a second file here:
+   gateway/judge_calibration.json already IS the generic, ship-safe
+   form this protocol calibrates against — labeled prompt/response
+   pairs with a `verdict` key, placeholder model aliases only
+   ("lead-gemini" / "intern" / "middle-groq"), no operator- or
+   deployment-private detail. A parallel `JUDGE_PAIRS_SET.md` would
+   only risk drifting out of sync with the one file `shadow_eval.py`'s
+   own `--calibrate` flag actually reads; this protocol points at that
+   file by path instead of copying its content.

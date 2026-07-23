@@ -107,6 +107,51 @@ doesn't open from disk -- all of these silently exit 0, neither channel
 touched. One outer try/except around the whole of main() -- exit 0 on
 ANY unexpected exception (the same principle as every hook in this
 toolkit).
+
+WITNESS ECHO at write time (this port's second extension): cross-checks
+the `witness` field of a NEW `accepted`+agent=builder journal line
+against the runs actually OBSERVED in the current session's own DoD
+track (.claude/dod_track/<session_id>.json, written by
+tools/dod_track.py -- read here only, by a LOCAL copy of its track-path
+formula, never imported: the same hook self-containment principle this
+file's module docstring already documents for _raw_sanitize/
+_ascii_sanitize; journal_validator and tier_echo stay the only declared
+import exceptions). Trigger: in the SAME new_lines/head_lines that TIER
+ECHO already computes above, a line with event=="accepted",
+agent=="builder", and a non-empty `witness` string.
+
+Outcomes (per matching line):
+ - notes contains "retroactive" -> silent (a retro-accepted witness is
+   not comparable to the current session's own track by definition).
+ - the current session's track is empty/unreadable (no file, empty
+   file, broken JSON, not an object, "runs" missing/not a list) ->
+   silent (nothing to compare against; not a violation).
+ - the track is non-empty but NONE of its distinct normalized commands
+   occur as a substring of the normalized witness text -> a soft
+   warning (legitimate for a batch/cross-session/retro acceptance --
+   verify manually).
+ - a track command DOES occur in the witness text, and that command's
+   LATEST run (by ts) was recorded "red" -> a loud warning naming the
+   command and its last-red ts, once per such command.
+ - a track command occurs in the witness text and its latest run was
+   "green" -> complete silence on that line (same principle as TIER
+   ECHO's "every measured model carries the word").
+Normalization (for both the track command and the witness text, before
+the substring check): every run of whitespace collapsed to one space
+plus a strip -- so a witness text reflowed/wrapped differently from
+the exact command still matches.
+
+Ceiling: at most MAX_WITNESS_LINES=5 visible (warn_soft/warn_loud)
+lines per hook call, "+K more" on top -- the same independent-axis
+ceiling pattern as MAX_TIER_LINES, guarding the same head_text=None
+("new_lines = the whole file") scenario. The track is read lazily and
+at most ONCE per hook call (session_id is shared by every line in one
+PostToolUse event).
+
+This extension shares main()'s outer try/except AND has its own local
+try/except around the collection call, so a failure inside the
+witness cross-check can never take down TIER ECHO or the form-defect
+check running alongside it in the same call.
 """
 
 import datetime
@@ -146,6 +191,20 @@ AGENT_WORKER_REF_RE = re.compile(r"^agent:([a-z0-9-]+)$")
 # MAX_HEAD_MESSAGES (that one caps form-defect messages at 3; this one
 # caps tier lines at 5, an independent axis).
 MAX_TIER_LINES = 5
+
+# --- WITNESS ECHO at write time (this port's second extension) ---------
+WITNESS_TRIGGER_EVENT = "accepted"
+WITNESS_TRIGGER_AGENT = "builder"
+# Ceiling on VISIBLE WITNESS ECHO lines per hook call -- independent
+# axis from MAX_HEAD_MESSAGES (3) and MAX_TIER_LINES (5); same class of
+# ceiling, same rationale (head_text=None makes new_lines the whole
+# file -- an unbounded additionalContext otherwise).
+MAX_WITNESS_LINES = 5
+# Silent-note literals (never printed -- see build_witness_segment):
+# returned from _collect_witness_events purely for testability of the
+# outcome lattice.
+NOTE_RETRO = "retro accepted - track incomparable"
+NOTE_TRACK_EMPTY = "track empty/unreadable - witness incomparable"
 
 
 def _raw_sanitize(s: str, max_len: int = MAX_MESSAGE_LEN) -> str:
@@ -409,23 +468,362 @@ def build_context(violations: list, ascii_only: bool = False) -> str:
     return f"JOURNAL ECHO: {n} defect(s) in new lines: {body}"
 
 
-def combine_context(violations: list, tier_events: list, ascii_only: bool = False) -> str:
-    """One JSON additionalContext can carry both form defects and TIER
-    ECHO lines (joined by "; "). Two INDEPENDENT segments --
+def combine_context(violations: list, tier_events: list, witness_events: list = None,
+                     fallback_marker: str = "", ascii_only: bool = False) -> str:
+    """One JSON additionalContext can carry form defects, TIER ECHO
+    lines, WITNESS ECHO lines, and (t-277/t-279, ported from HQ) a
+    fallback-base marker, joined by "; ". FOUR INDEPENDENT segments --
     build_context(violations) (as a whole, its own "JOURNAL ECHO: N
-    defect(s)..." header unchanged) and build_tier_segment(tier_events)
-    -- joined with "; ", only when non-empty. No form defects but tier
-    lines present -> the result is just the tier segment, the JSON is
-    still printed. Both empty -> "" -- the caller (main()) treats an
-    empty string as complete silence (the same truthiness check that
-    used to be `if not violations`)."""
+    defect(s)..." header unchanged), build_tier_segment(tier_events),
+    build_witness_segment(witness_events), and fallback_marker -- joined
+    with "; ", only when non-empty. Any subset empty -> the result is
+    just the remaining non-empty segments, the JSON is still printed as
+    long as at least one segment is non-empty. All empty -> "" -- the
+    caller (main()) treats an empty string as complete silence.
+
+    fallback_marker -- a LITERAL (FALLBACK_MARKER_TEXT, see the
+    "PAYLOAD-SCOPED ECHO BASE" section below), never sanitized (a
+    static ASCII string, never third-party text -- same principle as
+    build_context's static prefix). main() passes it as an empty
+    string whenever TIER ECHO/WITNESS ECHO did NOT degrade to the
+    HEAD-diff fallback on this particular hook call (see
+    _resolve_echo_base) -- so its absence in the old 2-/3-positional
+    call forms changes nothing.
+
+    witness_events=None (default, NOT []) preserves the old 2-positional
+    call form combine_context(violations, tier_events) byte-for-byte:
+    a None witness_events segment is "" exactly like an empty list, so
+    every existing call/test using the short form is unaffected.
+    fallback_marker="" (default) is the same story -- it never adds a
+    segment unless explicitly passed."""
     parts = []
     if violations:
         parts.append(build_context(violations, ascii_only))
     tier_segment = build_tier_segment(tier_events, ascii_only)
     if tier_segment:
         parts.append(tier_segment)
+    witness_segment = build_witness_segment(witness_events or [], ascii_only)
+    if witness_segment:
+        parts.append(witness_segment)
+    if fallback_marker:
+        parts.append(fallback_marker)
     return "; ".join(parts)
+
+
+# --- PAYLOAD-SCOPED ECHO BASE (t-277/t-279, ported from HQ) -------------
+# ROOT CAUSE / FIX / EMPIRICAL BASIS: identical to HQ's tools/
+# journal_echo.py (same section header there) -- TIER ECHO/WITNESS ECHO
+# shared ONE base with VALIDATION (HEAD-diff, cumulative across every
+# PostToolUse call since the last commit), so a session appending lines
+# across several tool calls without committing between them re-echoed
+# the SAME already-reported event on every later call. The fix: derive
+# the "new lines" base from the CURRENT tool call's OWN payload
+# (tool_response.originalFile, empirically confirmed on BOTH Edit's and
+# Write's Zod output schemas in the installed claude-code binary -- the
+# full file content immediately BEFORE this specific tool call, string
+# or null). DEFERRAL (t-277/t-279, builder finding: the given context
+# manifest expected an existing "no ts-drift layer" deferral note
+# elsewhere in this module's docstring to preserve -- none was found on
+# inspection; this line IS that deferral note, stated here since there
+# wasn't a prior one): this port carries NO ts-drift layer and this
+# task does NOT add one -- this section only affects TIER ECHO/WITNESS
+# ECHO here, unlike HQ's tools/journal_echo.py where the identical base
+# change also fixes a TS DRIFT correctness bug.
+#
+# FAIL-OPEN: tool_name outside {"Edit", "Write"}, a missing/malformed
+# tool_response, an absent/wrongly-typed "originalFile" key, OR a
+# recovered originalFile that disk_text does NOT extend as a strict
+# append (a non-tail edit) -- ALL fall back to the SAME HEAD-diff
+# computation this file used before this port (identical logic,
+# unchanged) -- see _resolve_echo_base. The fallback is disclosed via
+# FALLBACK_MARKER_TEXT, appended as combine_context's fourth segment --
+# but ONLY when there is already something else to report (see main()):
+# an otherwise-fully-clean call stays completely silent even in
+# fallback, matching this file's pre-existing "no noise on a clean
+# write" contract.
+_ORIGINAL_FILE_UNAVAILABLE = object()
+EDIT_LIKE_TOOL_NAMES = ("Edit", "Write")
+FALLBACK_MARKER_TEXT = "echo base: HEAD-diff fallback"
+
+
+def _extract_original_file(payload, tool_name):
+    """tool_response.originalFile -- see the section docstring above.
+    Returns _ORIGINAL_FILE_UNAVAILABLE when tool_name isn't Edit/Write,
+    or tool_response isn't a dict, or the "originalFile" key is absent,
+    or present with a type that's neither str nor None; "" when
+    originalFile is None (a brand-new file); the string itself
+    otherwise."""
+    if tool_name not in EDIT_LIKE_TOOL_NAMES:
+        return _ORIGINAL_FILE_UNAVAILABLE
+    tool_response = payload.get("tool_response") if isinstance(payload, dict) else None
+    if not isinstance(tool_response, dict):
+        return _ORIGINAL_FILE_UNAVAILABLE
+    if "originalFile" not in tool_response:
+        return _ORIGINAL_FILE_UNAVAILABLE
+    original_file = tool_response["originalFile"]
+    if original_file is None:
+        return ""
+    if not isinstance(original_file, str):
+        return _ORIGINAL_FILE_UNAVAILABLE
+    return original_file
+
+
+def _resolve_echo_base(payload, tool_name, staged_lines: list, head_lines: list):
+    """Returns (echo_base_lines, echo_new_lines, used_fallback) -- the ONE
+    base shared by TIER ECHO/WITNESS ECHO in this port (VALIDATION/
+    JOURNAL ECHO stays on the separate, cumulative HEAD-diff base -- see
+    main()). See the section docstring above for the primary/fallback
+    logic (identical to HQ's tools/journal_echo.py)."""
+    original_file = _extract_original_file(payload, tool_name)
+    if original_file is not _ORIGINAL_FILE_UNAVAILABLE:
+        base_lines = journal_validator.split_lines(original_file)
+        op_ok, _ = journal_validator.check_append_only(staged_lines, base_lines)
+        if op_ok:
+            return base_lines, staged_lines[len(base_lines):], False
+    append_ok, _ = journal_validator.check_append_only(staged_lines, head_lines)
+    new_lines = staged_lines[len(head_lines):] if append_ok else []
+    return head_lines, new_lines, True
+
+
+# ---------------------------------------------------------------------
+# WITNESS ECHO at write time (this port's second extension) -- pure logic
+# ---------------------------------------------------------------------
+
+
+def _normalize_ws(s) -> str:
+    """Collapses every run of whitespace (space/tab/newline) into a
+    single space, then strips. Applied to BOTH the track's command
+    string and the witness text before the substring comparison (a
+    witness reflowed across lines still matches the recorded command).
+    A non-string input -> "" (a safe default that never matches
+    anything by substring)."""
+    if not isinstance(s, str):
+        return ""
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def _witness_track_path(cwd, session_id) -> Path:
+    """.claude/dod_track/<session_id>.json under the calling session's
+    cwd -- the SAME formula tools/dod_track.py uses for its own track
+    file, reproduced locally (read-only) rather than imported: the
+    hook self-containment principle this module's docstring already
+    explains for _raw_sanitize/_ascii_sanitize. The track file's shape
+    is a documented, stable contract between this toolkit's hooks, not
+    an internal implementation detail of dod_track.py."""
+    return Path(cwd or ".") / ".claude" / "dod_track" / f"{session_id}.json"
+
+
+def _load_witness_runs(cwd, session_id):
+    """Reads the current session's track "runs" list. Returns a list
+    (possibly empty) on a successful read of a valid JSON object
+    carrying a "runs" list field; None on ANY failure -- session_id not
+    a non-empty string, no file, an empty/whitespace-only file, broken
+    JSON, JSON not an object, or "runs" missing/not a list. The caller
+    (_collect_witness_events) treats both None and an empty list the
+    same way: "track empty/unreadable" -- there is nothing to compare
+    the witness against either way."""
+    if not isinstance(session_id, str) or not session_id:
+        return None
+    path = _witness_track_path(cwd, session_id)
+    try:
+        if not path.exists():
+            return None
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if not text.strip():
+            return None
+        data = json.loads(text)
+        if not isinstance(data, dict):
+            return None
+        runs = data.get("runs")
+        if not isinstance(runs, list):
+            return None
+        return runs
+    except Exception:
+        return None
+
+
+def _group_runs_by_normalized_command(runs: list) -> dict:
+    """{normalized_command: [(ts, outcome), ...]} over EVERY run in the
+    track, of ANY agent_id (a builder subagent's run lives in the same
+    <session_id>.json as the main thread's -- agent_id is not filtered
+    here at all). A run with no usable command string (missing/empty
+    after normalization) is skipped -- nothing to compare. A non-dict
+    run entry (a corrupted track) is skipped silently. Grouping by
+    DISTINCT command, not by individual run, keeps the later substring
+    check to one probe per distinct command rather than one per run
+    (a track with many repeats of the same verification command is the
+    common case)."""
+    groups: dict = {}
+    for run in runs:
+        if not isinstance(run, dict):
+            continue
+        norm = _normalize_ws(run.get("command"))
+        if not norm:
+            continue
+        groups.setdefault(norm, []).append((run.get("ts"), run.get("outcome")))
+    return groups
+
+
+def _last_by_ts(entries: list):
+    """The (ts, outcome) entry with the MAX ts among entries (a list of
+    (ts, outcome) pairs, the shape _group_runs_by_normalized_command
+    produces). dod_track.py's ts values are fixed-width ISO with
+    microseconds, so plain string sorting is equivalent to chronological
+    sorting here -- cheaper than parsing a real datetime for this
+    purpose. A non-string/missing ts sorts as "" (a safe minimum that
+    never wins "latest" over a real timestamp, without breaking the
+    sort of the rest)."""
+    def key(e):
+        ts = e[0]
+        return ts if isinstance(ts, str) else ""
+    return sorted(entries, key=key)[-1]
+
+
+def _match_witness(witness: str, runs: list):
+    """For every DISTINCT normalized track command occurring as a
+    substring of the normalized witness text, looks up that command's
+    LATEST (by ts) run -- a "red" latest run is a candidate for a loud
+    warning (outcome is a secondary signal here: determine_outcome's
+    own safe default is "red" on an ambiguous run, so a red/green split
+    alone does not yet mean "the witness lies" -- hence a WARN, never a
+    hard block). Returns (matched_any: bool, loud: list[(cmd, ts)]).
+    matched_any=False means the track was non-empty but no command in
+    it occurs in the witness text at all -- the soft-warning case (see
+    _collect_witness_events).
+
+    Performance: exactly one substring probe per DISTINCT command in
+    the track (after grouping), not one per individual run -- a track
+    with hundreds of repeats of the same verification command collapses
+    to one "in" check, not hundreds."""
+    norm_witness = _normalize_ws(witness)
+    groups = _group_runs_by_normalized_command(runs)
+    matched_any = False
+    loud = []
+    for cmd, entries in groups.items():
+        if cmd in norm_witness:
+            matched_any = True
+            ts, outcome = _last_by_ts(entries)
+            if outcome == "red":
+                loud.append((cmd, ts))
+    return matched_any, loud
+
+
+def _collect_witness_events(new_lines: list, head_lines: list, payload: dict) -> list:
+    """For each NEW line (the same new_lines TIER ECHO already uses
+    above) with event=="accepted", agent=="builder", and a non-empty
+    `witness` string -- the outcome lattice:
+
+      1. notes contains "retroactive" -> ("note", line_no, NOTE_RETRO):
+         a retro-accepted witness is not comparable to the CURRENT
+         session's own track by definition -- silent.
+      2. the current session's track is empty/unreadable (see
+         _load_witness_runs) -> ("note", line_no, NOTE_TRACK_EMPTY) --
+         silent, not an exception.
+      3. no track command occurs in the witness (matched_any=False) ->
+         ("warn_soft", line_no) -- legitimate for a batch/cross-session/
+         retro acceptance (verify manually).
+      4. a matching command whose LATEST run was red -> ("warn_loud",
+         line_no, command, ts), one entry per such command.
+      5. otherwise (matched, latest run green) -> nothing added --
+         complete silence on that line (same principle as TIER ECHO's
+         "every measured model carries the word").
+
+    "note" events are NEVER printed (see build_witness_segment) --
+    returned alongside warn events purely so the outcome lattice is
+    directly testable.
+
+    Fails open per line (same pattern as _collect_tier_events): any
+    failure (malformed JSON, anything else) -- try/except around the
+    body of ONE iteration, `continue` -- does not interrupt the rest
+    of the new lines.
+
+    The track is read LAZILY and AT MOST ONCE per hook call (session_id
+    is shared across every line of one PostToolUse event) -- the same
+    "read once" performance principle the module docstring documents
+    for disk_text/git in main()."""
+    events = []
+    session_id = payload.get("session_id") if isinstance(payload, dict) else None
+    cwd = payload.get("cwd") if isinstance(payload, dict) else None
+    runs_loaded = False
+    runs_cache = None
+    for idx, line in enumerate(new_lines):
+        line_no = len(head_lines) + idx + 1
+        try:
+            obj = json.loads(line)
+            if not isinstance(obj, dict):
+                continue
+            if obj.get("event") != WITNESS_TRIGGER_EVENT:
+                continue
+            if obj.get("agent") != WITNESS_TRIGGER_AGENT:
+                continue
+            witness = obj.get("witness")
+            if not isinstance(witness, str) or not witness.strip():
+                continue
+
+            notes = obj.get("notes")
+            if isinstance(notes, str) and "retroactive" in notes:
+                events.append(("note", line_no, NOTE_RETRO))
+                continue
+
+            if not runs_loaded:
+                runs_cache = _load_witness_runs(cwd, session_id)
+                runs_loaded = True
+            if not runs_cache:
+                events.append(("note", line_no, NOTE_TRACK_EMPTY))
+                continue
+
+            matched_any, loud = _match_witness(witness, runs_cache)
+            if not matched_any:
+                events.append(("warn_soft", line_no))
+            else:
+                for cmd, ts in loud:
+                    events.append(("warn_loud", line_no, cmd, ts))
+        except Exception:
+            continue
+    return events
+
+
+def _format_witness_line(event: tuple, ascii_only: bool) -> str:
+    """Static ASCII prefix "WITNESS ECHO: line N ..." plus dynamic
+    content (command name, ts) run through the channel's sanitizer --
+    same principle as _format_tier_line. ts from the track is dynamic
+    too (a third-party JSON file's field value, not a literal of this
+    module) and is sanitized symmetrically with cmd -- the "every
+    dynamic part is sanitized" invariant this file already applies to
+    _format_tier_line/_format_measured. In practice dod_track's
+    _now_iso() output is always clean ASCII with no control chars, so
+    sanitizing it here is a no-op in the ordinary case -- it exists to
+    close the adversarial edge (a corrupted/foreign track with control
+    chars or a giant ts value)."""
+    sanitize = _ascii_sanitize if ascii_only else _raw_sanitize
+    kind = event[0]
+    line_no = event[1]
+    if kind == "warn_loud":
+        _, _, cmd, ts = event
+        return (f"WITNESS ECHO: line {line_no} contradiction - command "
+                f"'{sanitize(cmd)}' recorded RED in session track (last red at {sanitize(str(ts))})")
+    # warn_soft
+    return (f"WITNESS ECHO: line {line_no} witness command(s) not observed in "
+            "session track (batch/cross-session/retro acceptance legitimate - verify manually)")
+
+
+def build_witness_segment(witness_events: list, ascii_only: bool = False) -> str:
+    """Assembles the WITNESS ECHO part of additionalContext -- ONLY
+    from "warn_loud"/"warn_soft" events ("note" events are silent by
+    definition, see _collect_witness_events); ceiling MAX_WITNESS_LINES
+    (=5, boundary-tested at 5/6), same "+K more" pattern as
+    build_tier_segment. An empty visible-events list -> "" (the caller
+    treats an empty string as "no segment", same principle as
+    build_tier_segment)."""
+    warn_events = [e for e in witness_events if e[0] in ("warn_loud", "warn_soft")]
+    if not warn_events:
+        return ""
+    head = warn_events[:MAX_WITNESS_LINES]
+    rest = len(warn_events) - len(head)
+    body = "; ".join(_format_witness_line(e, ascii_only) for e in head)
+    if rest > 0:
+        body += f"; +{rest} more"
+    return body
 
 
 def _reconfigure_streams_utf8():
@@ -469,29 +867,53 @@ def main() -> int:
         now = datetime.datetime.now()
         head_text = _get_head_text(root)
 
+        # VALIDATION -- the cumulative HEAD-diff base, unchanged by
+        # t-277/t-279: historical uncommitted lines' FORM still needs
+        # catching before commit regardless of which specific tool call
+        # is running now.
         _, violations = journal_validator.decide(disk_text, head_text, now)
 
-        # TIER ECHO at write time (this port's extension): the same
-        # "new lines" that decide() validates internally -- computed
-        # INDEPENDENTLY via the same public split_lines/
-        # check_append_only (decide() does not expose new_lines
-        # itself). append-only NOT holding -- staged doesn't start with
-        # HEAD as a prefix -- means "new lines" can't be determined by
-        # a slice (staged may mix edited/deleted old lines) -- tier
-        # events are not counted at all in that case (new_lines = []),
-        # that defect (append-only) is already covered separately via
-        # violations.
+        # ECHO LAYERS (TIER ECHO/WITNESS ECHO, t-277/t-279): ONE
+        # payload-scoped base shared by both collectors (see
+        # _resolve_echo_base/the "PAYLOAD-SCOPED ECHO BASE" section
+        # above) -- replaces the old HEAD-diff base these two layers
+        # used to share with VALIDATION (root cause: that base is
+        # cumulative between commits, so every call re-echoed every
+        # uncommitted line, not just the one THIS call added).
         staged_lines = journal_validator.split_lines(disk_text)
         head_lines = journal_validator.split_lines(head_text)
-        append_ok, _ = journal_validator.check_append_only(staged_lines, head_lines)
-        new_lines = staged_lines[len(head_lines):] if append_ok else []
-        tier_events = _collect_tier_events(new_lines, head_lines)
+        tool_name = payload.get("tool_name")
+        echo_base_lines, echo_new_lines, used_fallback = _resolve_echo_base(
+            payload, tool_name, staged_lines, head_lines)
 
-        if not violations and not tier_events:
+        tier_events = _collect_tier_events(echo_new_lines, echo_base_lines)
+
+        # WITNESS ECHO at write time (this port's second extension --
+        # see the module docstring): the SAME payload-scoped base as
+        # TIER ECHO above. A second, outer try/except here (on top of
+        # the per-line one inside _collect_witness_events itself) means
+        # a failure in this cross-check can never take down JOURNAL
+        # ECHO/TIER ECHO.
+        try:
+            witness_events = _collect_witness_events(echo_new_lines, echo_base_lines, payload)
+        except Exception:
+            witness_events = []
+        # "note" events (retro / empty track) never make a line visible
+        # -- only warn_loud/warn_soft trigger printing.
+        witness_visible = any(e[0] != "note" for e in witness_events)
+
+        if not violations and not tier_events and not witness_visible:
             return 0
 
-        context_for_stdout = combine_context(violations, tier_events, ascii_only=False)
-        context_for_stderr = combine_context(violations, tier_events, ascii_only=True)
+        # Fallback marker (t-277/t-279): visible ONLY when we're already
+        # printing something else -- an otherwise fully clean call stays
+        # silent even in fallback (see the section docstring above).
+        fallback_marker = FALLBACK_MARKER_TEXT if used_fallback else ""
+
+        context_for_stdout = combine_context(violations, tier_events, witness_events,
+                                              fallback_marker, ascii_only=False)
+        context_for_stderr = combine_context(violations, tier_events, witness_events,
+                                              fallback_marker, ascii_only=True)
 
         sys.stderr.write(context_for_stderr + "\n")
         output = {

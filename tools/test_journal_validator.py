@@ -517,6 +517,58 @@ def test_matrix_rejected_only_needs_by_present_no_tier_check():
     assert code == 0
 
 
+# ---- 11b. basis "judge" -- legal ONLY on a leaf-class dispatch
+# (category recon/implementation; this toolkit's own CLAUDE.md "Leaf
+# routing" section -- see the module docstring's rule 11 NOTE for the
+# empirical finding that the reference validator does not itself gate
+# this, despite documenting the restriction). ----
+
+
+def test_matrix_judge_basis_passes_on_recon_category():
+    staged = _staged(_line(event="accepted", ts="2026-07-10T08:10:00", agent="scout",
+                            model="haiku", task_id="t-001", by="haiku", basis="judge",
+                            category="recon", notes="judge accepts a recon leaf"))
+    code, violations = jv.decide(staged, HEAD_TEXT, NOW)
+    assert code == 0, violations
+
+
+def test_matrix_judge_basis_passes_on_implementation_category():
+    staged = _staged(_line(event="accepted", ts="2026-07-10T08:10:00", agent="builder",
+                            model="sonnet", task_id="t-001", by="sonnet", basis="judge",
+                            category="implementation", witness="w",
+                            notes="judge accepts an implementation leaf"))
+    code, violations = jv.decide(staged, HEAD_TEXT, NOW)
+    assert code == 0, violations
+
+
+def test_matrix_judge_basis_fails_on_non_leaf_category():
+    # boundary: "judge" is a KNOWN basis value, but the category on
+    # THIS line is neither "recon" nor "implementation" -- must still
+    # fail (a graph/review/mechanism-class dispatch is never
+    # judge-acceptable).
+    staged = _staged(_line(event="accepted", ts="2026-07-10T08:10:00", agent="builder",
+                            model="sonnet", task_id="t-001", by="sonnet", basis="judge",
+                            category="review", witness="w",
+                            notes="judge basis on a non-leaf category must fail"))
+    code, violations = jv.decide(staged, HEAD_TEXT, NOW)
+    assert code == 1
+    assert any("role-vs-tier" in v for v in violations)
+
+
+def test_matrix_judge_basis_fails_when_category_missing():
+    # a missing/invalid category is caught as its own separate form
+    # defect (rule 2), but it must ALSO fail the leaf-class judge check
+    # (category not in LEAF_CATEGORIES) rather than being silently
+    # treated as a leaf by default.
+    staged = _staged(_line(event="accepted", ts="2026-07-10T08:10:00", agent="builder",
+                            model="sonnet", task_id="t-001", by="sonnet", basis="judge",
+                            category="", witness="w",
+                            notes="judge basis with an empty category must fail"))
+    code, violations = jv.decide(staged, HEAD_TEXT, NOW)
+    assert code == 1
+    assert any("role-vs-tier" in v for v in violations)
+
+
 # ---- HEAD empty (first-ever commit / fresh deploy) ----
 
 def test_empty_head_first_delegated_must_be_t001():

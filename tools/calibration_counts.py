@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
@@ -53,6 +54,28 @@ TASK_ID_REQUIRED_EVENTS = {"delegated", "accepted", "rejected", "escalated", "de
 FAILURE_CLASSES = {"spec", "capability", "recon", "tooling"}
 LIFECYCLE_EVENTS = {"delegated", "accepted", "rejected", "escalated"}
 ALWAYS_REQUIRED_FIELDS = ("agent", "category", "notes")
+
+# Unclosed-tasks fix (a prior review finding): literal mirror of
+# tools/session_context.py's _CLOSES_RE -- the same shape the
+# SessionStart hook reads (left-anchored \b so "discloses:t-001"/
+# "encloses:t-133" do not match as a substring; the value is ONLY
+# t-\d+, not an arbitrary non-whitespace token -- this IS the scanner's
+# actual shape, not literally "the first non-whitespace fragment":
+# trailing punctuation like "closes:t-042;" is naturally excluded by
+# \d+ itself, no separate trimming needed). Deliberately duplicated,
+# not imported: this script works standalone across journal formats
+# (see module docstring) and does not depend on session_context.py,
+# which is specific to the harness's SessionStart hook.
+CLOSES_RE = re.compile(r"(?<!\w)closes:(t-\d+)")
+
+
+def extract_closes_tokens(notes: Optional[str]) -> List[str]:
+    """closes:t-NNN tokens from a notes field -- mirrors
+    session_context._closes_task_ids: an empty list for a non-string/
+    missing notes, never raises."""
+    if not isinstance(notes, str):
+        return []
+    return CLOSES_RE.findall(notes)
 
 
 def parse_ts(ts: Optional[str]) -> Optional[datetime]:
@@ -251,6 +274,20 @@ def analyze_journal(path: str, window_start: Optional[datetime], window_end: Opt
     # when its own delegated line falls inside the window.
     last_status: Dict[str, str] = {}          # task_id -> last lifecycle event
     seen_delegated: Dict[str, bool] = {}      # task_id -> at least one delegated seen
+    # Unclosed-tasks fix (a prior review finding), part (1): closes:
+    # tokens are collected from the notes of ALL parsed lines (not just
+    # lifecycle events -- the token can sit in a LATER event's notes,
+    # e.g. dispatch_skipped/calibrated), across the WHOLE file, mirroring
+    # session_context.open_dispatches(), which likewise scans notes
+    # regardless of event type. A token's mere presence closes the task
+    # for this counter (this script does not attempt to reproduce
+    # session_context.py's full (ts, file_idx) "can a later delegated
+    # reopen past a marker" semantics -- this script prints candidates,
+    # not a binding verdict; see the module docstring).
+    closed_via_token: set = set()
+    for pl in parsed_lines:
+        for closed_tid in extract_closes_tokens(pl.data.get("notes")):
+            closed_via_token.add(closed_tid)
     duplicate_delegates = []
     for pl in parsed_lines:
         d = pl.data
@@ -285,6 +322,13 @@ def analyze_journal(path: str, window_start: Optional[datetime], window_end: Opt
             last_status[tid] = "delegated"
         elif ev in ("accepted", "rejected", "escalated"):
             last_status[tid] = ev
+        elif ev == "decomposable":
+            # Unclosed-tasks fix (a prior review finding), part (2): per
+            # the policy state machine (CLAUDE.md's journal mermaid
+            # diagram), decomposable CLOSES the dispatch (a return to
+            # the coordinator under the same task_id) -- it does not
+            # stay "delegated" forever.
+            last_status[tid] = "decomposable"
         # defect_found does not move the original task's lifecycle status
         # (it has its own task_id for the new finding; ref points back
         # to the original).
@@ -370,11 +414,22 @@ def analyze_journal(path: str, window_start: Optional[datetime], window_end: Opt
         })
 
     # --- 10. Unclosed tasks ---
+    # A prior review finding: "open" is the last lifecycle status being
+    # delegated (decomposable is now also a lifecycle status, see above
+    # -- it closes), AND the task is not marked by a closes: token
+    # anywhere in the journal's notes.
     unclosed_tasks = []
+    closed_by_decomposable = []
     for tid, status in last_status.items():
+        if tid in closed_via_token:
+            continue
+        if status == "decomposable":
+            closed_by_decomposable.append(tid)
+            continue
         if status == "delegated":
             unclosed_tasks.append(tid)
     unclosed_tasks.sort()
+    closed_by_decomposable.sort()
 
     return {
         "journal": path,
@@ -396,6 +451,7 @@ def analyze_journal(path: str, window_start: Optional[datetime], window_end: Opt
         ],
         "degradation_pairs": degradation_pairs,
         "unclosed_tasks": unclosed_tasks,
+        "closed_by_decomposable": closed_by_decomposable,
     }
 
 
@@ -490,11 +546,14 @@ def render_text(report: Dict[str, Any]) -> str:
     else:
         out.append("  (no degradation events in window)")
 
-    out.append(_fmt_section("Unclosed tasks (last lifecycle event = delegated)"))
+    out.append(_fmt_section("Unclosed tasks (last lifecycle event = delegated, "
+                             "no closes: token)"))
     if report["unclosed_tasks"]:
         out.append("  " + ", ".join(report["unclosed_tasks"]))
     else:
         out.append("  (none)")
+    if report["closed_by_decomposable"]:
+        out.append("  closed: decomposable -- " + ", ".join(report["closed_by_decomposable"]))
 
     return "\n".join(out)
 

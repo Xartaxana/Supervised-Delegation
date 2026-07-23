@@ -457,3 +457,52 @@ def test_unclosed_tasks_listed(tmp_path):
     ])
     report = analyze_journal(str(p), None, None, parse_ts("2026-07-10T13:14:00"))
     assert report["unclosed_tasks"] == ["t-001"]
+
+
+# ---------------------------------------------------------------------
+# A prior review finding: closing semantics in "unclosed tasks" -- a
+# closes: token in ANY later event's notes, and decomposable as a
+# closing status. Case 3 (regression guard: a purely open delegated ->
+# IS in unclosed) is already covered by test_unclosed_tasks_listed
+# above -- not duplicated here.
+# ---------------------------------------------------------------------
+def test_unclosed_closed_by_closes_token_in_later_event(tmp_path):
+    p = tmp_path / "j.jsonl"
+    write_journal(p, [
+        ev("2026-07-15T00:00:00", "delegated", agent="scout", model="haiku",
+           task_id="t-001", category="recon", notes="n"),
+        # a later event that is NOT a lifecycle event (calibrated), but
+        # its notes still carry a closes: token that must close t-001
+        ev("2026-07-15T01:00:00", "calibrated", agent="lead", model="fable",
+           category="calibration", notes="weekly run closes:t-001"),
+    ])
+    report = analyze_journal(str(p), None, None, parse_ts("2026-07-16T00:00:00"))
+    assert report["unclosed_tasks"] == []
+
+
+def test_unclosed_closed_by_decomposable(tmp_path):
+    p = tmp_path / "j.jsonl"
+    write_journal(p, [
+        ev("2026-07-15T00:00:00", "delegated", agent="scout", model="haiku",
+           task_id="t-002", category="recon", notes="n"),
+        ev("2026-07-15T00:10:00", "decomposable", agent="scout", model="haiku",
+           task_id="t-002", category="recon", notes="decomposable into parts"),
+    ])
+    report = analyze_journal(str(p), None, None, parse_ts("2026-07-16T00:00:00"))
+    assert report["unclosed_tasks"] == []
+    assert report["closed_by_decomposable"] == ["t-002"]
+
+
+def test_unclosed_closes_token_trailing_punctuation(tmp_path):
+    # "closes:t-042;" -- closes per the scanner's own shape
+    # (session_context.py's _CLOSES_RE: t-\d+, trailing punctuation is
+    # naturally excluded by \d+ itself, no separate trimming needed).
+    p = tmp_path / "j.jsonl"
+    write_journal(p, [
+        ev("2026-07-15T00:00:00", "delegated", agent="builder", model="sonnet",
+           task_id="t-042", category="implementation", notes="n"),
+        ev("2026-07-15T00:10:00", "dispatch_skipped", agent="builder", model="sonnet",
+           category="implementation", notes="small-work batch; closes:t-042; continued in t-050"),
+    ])
+    report = analyze_journal(str(p), None, None, parse_ts("2026-07-16T00:00:00"))
+    assert report["unclosed_tasks"] == []

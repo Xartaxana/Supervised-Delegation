@@ -148,7 +148,15 @@ separately in this deployment).
    event stays legitimate only for an edit that blocks the current
    step — the reason must name the blocker. Lead-tier work per the table
    (decomposition, specs, acceptance, architecture, policy) needs no
-   skip event.
+   skip event. DETERMINISTIC SCRIPT RUNS (D-0095): launching /
+   collecting a deterministic script (exam runner, construction
+   orchestrator, validator, health check — code with no AI judgment
+   in the coordinator's loop) is an ENVIRONMENT operation, not a
+   task mapping to a tier: no `dispatch_skipped` event is required.
+   The trace duty stays — the run's result lives in its own carrier
+   (Runs log, the construction's journal events, a report); a run
+   with no carrier trace is still a violation. In doubt (the run
+   embeds judgment) — the old skip-event form is the safe default.
 9. Fix the class, not the instance (fix-the-class-not-the-instance
    rule): name the class; walk its siblings by the MAP in
    docs/SIBLING_MAP.md (a targeted lookup, NOT a repo scan; a class
@@ -239,7 +247,17 @@ separately in this deployment).
    no DoD. Completeness of the DoD and of the manifest is the
    DISPATCHER's duty BEFORE sending — checking against this rule is
    part of composing the dispatch, not a step delegated to the
-   worker's judgment. The DoD itself is written INLINE in the dispatch
+   worker's judgment — executed as a FIVE-POINT CHECKLIST (D-0096)
+   run against every dispatch before it goes: (1) explicit question /
+   completeness criterion or acceptance keys; (2) DoD inline with
+   the exact verification run; (3) "given" enumerated AND
+   sufficient — data, fixtures, paths NAMED, not implied;
+   (4) writing dispatch: owns/non-goals/handoff present;
+   (5) freshness — the spec's load-bearing facts checked against
+   their carrier, not memory (a stale note in the spec is a
+   dispatcher defect). A checklist miss exposed by a reject or
+   finding = a spec-defect of the dispatcher (a calibration case);
+   promotion to a machine layer follows the next recurrence. The DoD itself is written INLINE in the dispatch
    prompt — named acceptance criteria plus the exact verification run
    whose output becomes the witness; a bare pointer to a spec file or
    to an earlier event is NOT a DoD. A worker returning a DoD-less (or, for a
@@ -280,6 +298,44 @@ separately in this deployment).
    batch at handoff (boot-diet). The target is roughly 15 main-turns
    per task — not a gate, a measured goal (a calibration check counts
    it).
+13. Leaf routing (leaf-routing rule). Intake classifies every task: a
+   LEAF closes under ONE performer of one tier with no dependencies on
+   other work; doubt about that = treat it as a graph (the standard
+   Lead loop, rules 1-12). A leaf runs through the lighter
+   construction BY DEFAULT (D-0094 — MAY promoted to default on the
+   clean judge-window audit of the staff's calibration #4): tier
+   chosen by the assignment table, the worker executes, and
+   acceptance comes from a CALIBRATED JUDGE instead of the
+   coordinator — the `accepted` event records `basis: "judge"`;
+   rejection mirrors rule 6 deterministically (one same-tier retry →
+   one-step escalation → failed back to the coordinator) with no
+   coordinator judgment inside that loop. A deviation — the
+   coordinator taking a leaf through the standard acceptance path —
+   is legal ONLY with a recorded reason in the journal; the window
+   detector is the calibration's judge-window check. Recon-leaf
+   intent keys / DoD carry the NEGATIVE-FORM-CONTROL criterion
+   (command hygiene p.6): a negative claim in the material without
+   its positive same-form control → reject. TWO forms of judge are
+   legitimate, and both must be equivalence-checked before use: (i) the
+   gateway alias configured for the judge role (needs a live proxy —
+   the only form usable from a script-driven construction), and (ii) a
+   SUBSCRIPTION judge-subagent carrying the pinned `JUDGE_SYSTEM_PROMPT`
+   (gateway/shadow_eval.py) VERBATIM. Either form is used for real
+   acceptance ONLY after it reproduces the labeled calibration set
+   (gateway/judge_calibration.json) in full — PROCESS/
+   JUDGE_CALIBRATION_PROTOCOL.md's own procedure; a judge-subagent whose
+   prompt has drifted from `JUDGE_SYSTEM_PROMPT` is a finding, not a
+   judge. Judge acceptance is legitimate ONLY for leaf-class dispatches
+   (recon, or implementation to a written spec) — it never accepts
+   mechanisms, policy edits, or an integration whole; those keep the
+   role-vs-tier acceptance matrix (Role ≠ tier, below), unconditionally.
+   Graph-shaped tasks keep the standard Lead loop; with no judge
+   available in either form, the standard acceptance path applies to
+   every task regardless of leaf/graph shape. Misclassification is
+   recoverable by construction, not a hazard to guard against upfront: a
+   leaf that turns out to be a graph comes back via a judge REJECT or a
+   `decomposable` event (rule 5); a graph-classified task that turns out
+   simple only pays the ordinary coordination tax, nothing more.
 
 ## Routing log — logs/routing-log.jsonl
 
@@ -347,7 +403,7 @@ base fields (ts/event/agent/category/notes), at a glance:
 | event | adds on top of the base fields |
 |---|---|
 | `delegated` | `task_id`, `model`, `worker_ref`; a REPEAT on an open task is legitimate only as: a critic-entry / a retry with `attempt`>=2 after `rejected` / a `replaces_worker:<prev worker_ref>` bare token in `notes` |
-| `accepted` | `task_id`, `model`, `by` (a bare tier word); + `basis` ("critic" / "queued-to-lead") when the acceptor is not strictly above the executor; + `witness` (the verbatim run output) on builder work |
+| `accepted` | `task_id`, `model`, `by` (a bare tier word); + `basis` ("critic" / "queued-to-lead") when the acceptor is not strictly above the executor, or "judge" on a leaf-class dispatch (rule 13); + `witness` (the verbatim run output) on builder work |
 | `rejected` | `task_id`, `model`, `by`, `attempt` (number), `failure_class` ∈ spec/capability/recon/tooling |
 | `escalated` | `task_id` (must already exist earlier in the file), `model` |
 | `defect_found` | `task_id`, `ref` (the task_id of the original `accepted`) |
@@ -378,8 +434,9 @@ no-silent-reuse rule); new accepted/rejected events carry `by` (the
 accepting model); `accepted` for scout/builder/critic is legitimate
 when tier(by) is above the tier of `agent`, OR with a `basis` field:
 "critic" / "queued-to-lead" — the role-vs-tier acceptance matrix
-encoded; for non-Claude workers the `basis` field is mandatory on
-`by`. `by` and `model` are DIFFERENT formats, on purpose: `by` must be
+encoded — OR "judge" on a leaf-class dispatch that reproduced the
+calibration set first (rule 13); for non-Claude workers the `basis`
+field is mandatory on `by`. `by` and `model` are DIFFERENT formats, on purpose: `by` must be
 a bare tier keyword from `TIER_ORDER` in `tools/journal_validator.py`
 (`haiku`/`sonnet`/`opus`/`fable`) — the validator compares tiers
 numerically, so a full model id (e.g. `"claude-opus-4-8"`) matches no

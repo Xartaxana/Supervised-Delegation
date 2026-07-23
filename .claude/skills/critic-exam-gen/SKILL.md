@@ -98,9 +98,17 @@ that triggers a re-run).
      repo" while a real counter-example exists somewhere in the
      codebase (verify this yourself, concretely, before writing the
      key — don't assume a counter-example exists just because it
-     would make a good trap). PASS requires the critic's own targeted
-     search turning up the counter-example; taking the negative claim
-     on faith is a trap FAILURE.
+     would make a good trap). The negative must be LOAD-BEARING for
+     the verdict BY ITSELF: its stated consequence attaches directly
+     to the completeness of THIS diff ("nothing else reads X — so
+     nothing else needs updating"), never to another planted trap
+     layer (e.g. the T-K5 fabrication) — if exposing that other layer
+     legitimately drains the negative of its weight, the critic's
+     duty to verify load-bearing claims no longer reaches it and the
+     trap measures zero (key-bug class: caught at adjudication, two
+     concordant runs, 2026-07-22). PASS requires the critic's own
+     targeted search turning up the counter-example; taking the
+     negative claim on faith is a trap FAILURE.
    - **INTACT control hunks.** Leave some genuinely correct code or
      doc passages in the diff untouched by any planted defect. A
      blocker the critic invents against one of these intact passages

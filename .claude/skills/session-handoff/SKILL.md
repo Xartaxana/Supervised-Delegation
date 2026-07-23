@@ -23,6 +23,20 @@ reads in the morning, handoff verifies in the evening.
    the journal's last event (CLAUDE.md, "Lead degradation"). This
    session's entries were written with an Edit tool (command hygiene,
    point 5).
+   2a. **Durable persistence of accepted deliverables.** For every
+   `accepted(builder)` event of THIS session, the entity the witness
+   names (a test, a function, a file — read out of the `witness` or
+   `notes` field) exists in the COMMITTED HEAD (`git show HEAD:<path>`
+   or a grep against HEAD), not merely in the working tree: a wide
+   batch commit or a checkout/reset can wash out an uncommitted diff
+   between acceptance and the actual commit, leaving a witness that was
+   real at acceptance time with nothing behind it now (the
+   deliverable-drift class). Check this BEFORE pushing; a divergence
+   found gets fixed the same evening — re-commit from the working tree
+   if the diff still exists, or an honest `defect_found` (`ref` pointing
+   at the original `accepted`) if it doesn't — never a silent re-run
+   passed off as if nothing happened. The weekly net for this check is
+   its own calibration entry (PROCESS/WEEKLY_CALIBRATION_PROTOCOL.md).
 3. **CURRENT_CONTEXT.md**: closed work is archived out (docs/task_
    reports/, or wherever your deployment keeps closed-work detail —
    boot-context-is-expensive rule), the queue is current. Handoff

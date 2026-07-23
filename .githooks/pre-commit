@@ -1,4 +1,15 @@
 #!/bin/sh
+# The hook's exit code must reflect the FIRST failing check, not the
+# last command in the file (critic t-274 blocker B1: without set -e a
+# journal_validator failure is masked by a passing escape_check).
+set -e
 # Routing-journal validator: the staged logs/routing-log.jsonl doesn't
 # break append-only / typed fields / the role-vs-tier acceptance matrix.
 python tools/journal_validator.py
+# Escape-allowlist: CLAUDE.md's permanent escape/concession clauses stay
+# hash-pinned to their authorizing decision-log section. NOTE: this
+# toolkit ships no tools/escape_allowlist.json by default (see
+# tools/escape_allowlist.template.json) -- a deployment that has not set
+# one up yet will see this step fail closed until it copies the template
+# and fills in real entries (see that file's own instructions).
+python tools/escape_check.py

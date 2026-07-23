@@ -98,7 +98,19 @@ def _seed_committed_journal(root: Path, text: str = HEAD_TEXT) -> Path:
 # ---------------------------------------------------------------------
 
 
-def _post_tool_use_payload(file_path, tool_name="Edit") -> dict:
+_NO_ORIGINAL_FILE = object()  # sentinel -- omit tool_response.originalFile
+# entirely (t-277/t-279: exercises the FALLBACK path of
+# journal_echo._resolve_echo_base -- identical to the pre-t-279
+# HEAD-diff computation). The default preserves every existing call
+# site's payload shape byte-for-byte.
+
+
+def _post_tool_use_payload(file_path, tool_name="Edit", original_file=_NO_ORIGINAL_FILE) -> dict:
+    tool_response = {"filePath": str(file_path), "success": True}
+    if original_file is not _NO_ORIGINAL_FILE:
+        # t-277/t-279: tool_response.originalFile (Edit/Write Zod
+        # schemas -- see journal_echo.py's "PAYLOAD-SCOPED ECHO BASE").
+        tool_response["originalFile"] = original_file
     return {
         "session_id": "sess-1",
         "transcript_path": "/x/transcript.jsonl",
@@ -106,7 +118,7 @@ def _post_tool_use_payload(file_path, tool_name="Edit") -> dict:
         "hook_event_name": "PostToolUse",
         "tool_name": tool_name,
         "tool_input": {"file_path": str(file_path)},
-        "tool_response": {"filePath": str(file_path), "success": True},
+        "tool_response": tool_response,
         "tool_use_id": "tu-1",
     }
 
@@ -926,13 +938,17 @@ def test_echo_tier_dod_a_full_match_silent(tmp_path):
 
 def test_echo_tier_dod_b_mismatch_fable_declared_opus_measured(tmp_path):
     # DoD (b): fable declared, opus in the transcript -> a MISMATCH line.
+    # original_file=HEAD_TEXT (t-277/t-279): exercises the PRIMARY
+    # payload-scoped base (not the fallback) -- the exact-equality
+    # assertion below would otherwise pick up the fallback marker.
     journal_path = _seed_committed_journal(tmp_path)
     home = tmp_path / "home"
     _write_agent_transcript(home, "fbl001", [_assistant_line("claude-opus-4-8")])
     new_line = _line(event="delegated", ts="2026-07-10T08:10:00", task_id="t-002",
                       model="fable", worker_ref="agent:fbl001", notes="mismatch case")
     journal_path.write_text(HEAD_TEXT + new_line + "\n", encoding="utf-8")
-    result = _run_hook(_post_tool_use_payload(journal_path), env=_env_with_home(home))
+    result = _run_hook(_post_tool_use_payload(journal_path, original_file=HEAD_TEXT),
+                        env=_env_with_home(home))
     assert result.returncode == 0
     hook_output = _parse_stdout_json(result.stdout)
     ctx = hook_output["additionalContext"]
@@ -943,6 +959,8 @@ def test_echo_tier_dod_b_mismatch_fable_declared_opus_measured(tmp_path):
 def test_echo_tier_dod_c_mid_worker_informational_no_mismatch(tmp_path):
     # DoD (c): a mid-worker -- transcript fable+sonnet with fable
     # declared -> an informational line, no MISMATCH.
+    # original_file=HEAD_TEXT (t-277/t-279): PRIMARY payload-scoped
+    # base, same reasoning as test_echo_tier_dod_b above.
     journal_path = _seed_committed_journal(tmp_path)
     home = tmp_path / "home"
     _write_agent_transcript(
@@ -952,7 +970,8 @@ def test_echo_tier_dod_c_mid_worker_informational_no_mismatch(tmp_path):
     new_line = _line(event="delegated", ts="2026-07-10T08:10:00", task_id="t-002",
                       model="fable", worker_ref="agent:mid001", notes="mid-worker case")
     journal_path.write_text(HEAD_TEXT + new_line + "\n", encoding="utf-8")
-    result = _run_hook(_post_tool_use_payload(journal_path), env=_env_with_home(home))
+    result = _run_hook(_post_tool_use_payload(journal_path, original_file=HEAD_TEXT),
+                        env=_env_with_home(home))
     assert result.returncode == 0
     hook_output = _parse_stdout_json(result.stdout)
     ctx = hook_output["additionalContext"]

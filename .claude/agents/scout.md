@@ -69,3 +69,12 @@ Your job is to find things and report back concisely, without changing anything.
    another file, document, or config), report it as a list in the
    digest, WITHOUT expanding the search beyond the given question.
    Staying silent about a noticed analog is a violation.
+9. Final message = the FULL digest. Only the LAST message of your
+   session reaches the coordinator — earlier turns do not exist for
+   it (repeated incidents: a worker assumed an earlier turn's digest
+   was already delivered and sent only an addendum on resubmission).
+   EVERY closing message — including a resubmission after a hook block
+   or a follow-up question from the coordinator — carries the digest
+   WHOLE again, Trail block included. A reference to earlier text
+   ("see above") is forbidden; an empty or truncated final message
+   counts as recon not delivered, no matter how much work preceded it.

@@ -54,7 +54,16 @@ safety valve.
 
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
+
+
+def _now_iso() -> str:
+    # Same format as tools/dod_track.py._now_iso() -- local clock,
+    # microseconds, no timezone -- used ONLY for the new gate_log fields
+    # below (a gate_log entry with no ts/agent_id cannot be attributed to
+    # a time or a worker during later forensic review).
+    return datetime.now().strftime("%Y-%m-%dT%H:%M:%S.%f")
 
 BLOCK_MESSAGE = (
     "Stop blocked: there is no green verification run after the "
@@ -120,11 +129,29 @@ def _is_main_entry(entry: dict) -> bool:
 # file_path as tools/dod_gate.py -- applied here to the MAIN-ONLY subset.
 DOC_ONLY_EXTENSIONS = {".md", ".json", ".jsonl"}
 
+# Known, code-less dotfiles WITHOUT a suffix (pathlib treats the
+# leading dot as part of the stem, not an extension separator --
+# Path(".gitignore").suffix == "") -- these used to fail-closed (NOT
+# doc-only) even though they carry no code at all. Final list chosen
+# against this template's OWN actual files: ".gitignore" is a REAL
+# dotfile at this template's root, routinely edited by the main
+# thread. ".gitattributes"/".editorconfig" are the same class (git/
+# editor config, never executable code, universally recognized) --
+# added by the same deliberate choice even though absent from this
+# template today, a cheap extension of the same principle, not a
+# guess. A project's own .env (if any) is deliberately NOT included --
+# secrets/behavior-affecting values are a different risk class, not
+# "code-less config" in this sense.
+DOC_ONLY_DOTFILES = {".gitignore", ".gitattributes", ".editorconfig"}
+
 
 def _is_doc_only_file(file_path) -> bool:
     if not isinstance(file_path, str) or not file_path:
         return False
-    return Path(file_path).suffix.lower() in DOC_ONLY_EXTENSIONS
+    path = Path(file_path)
+    if path.name.lower() in DOC_ONLY_DOTFILES:
+        return True
+    return path.suffix.lower() in DOC_ONLY_EXTENSIONS
 
 
 def _all_edits_doc_only(edits) -> bool:
@@ -136,27 +163,47 @@ def _all_edits_doc_only(edits) -> bool:
 def evaluate(track: dict) -> tuple[bool, str]:
     """Check (a), pure logic -- the same signature/semantics as
     dod_gate.evaluate(), but on the MAIN-ONLY subset of edits/runs.
-    Doc-only (.md/.json/.jsonl) main-only edits are exempt from the
-    invariant entirely (see DOC_ONLY_EXTENSIONS above)."""
+
+    Ported fix (whole-or-nothing over edits AFTER the last green run,
+    not over the whole session history): the doc-only exemption used to
+    apply _all_edits_doc_only() to EVERY main-only edit in the track --
+    a single early code edit (e.g. to this very gate) permanently voided
+    the doc-only exemption for the rest of the session, even when a
+    green run followed it and every edit AFTER that green run was pure
+    doc-only (.md/.json/.jsonl). Order of checks now:
+      1. No green run at all -- there is no "after" anchor; doc-only is
+         checked over ALL main-only edits (same behavior as before in
+         this branch).
+      2. At least one green run -- last_green_ts is the boundary;
+         edits_after_green = edits with ts > last_green_ts (strictly
+         after). Empty -- every main-only edit happened before/at the
+         last green run, the invariant is already satisfied. Non-empty
+         -- doc-only is checked ONLY over this subset: all post-green
+         edits doc-only -> exemption fires; even one code edit among
+         them -> block (edits_after_green's ts is > last_green_ts by
+         construction, so no separate ts comparison is needed)."""
     edits = [e for e in (track.get("edits") or []) if _is_main_entry(e)]
     if not edits:
         return False, "no-main-edits"
 
-    if _all_edits_doc_only(edits):
-        return False, "doc-only-edits-exempt"
-
     runs = [r for r in (track.get("runs") or []) if _is_main_entry(r)]
-    last_edit_ts = max(e["ts"] for e in edits)
-
     green_runs = [r for r in runs if r.get("outcome") == "green"]
+
     if not green_runs:
+        if _all_edits_doc_only(edits):
+            return False, "doc-only-edits-exempt"
         return True, "no-green-run"
 
     last_green_ts = max(r["ts"] for r in green_runs)
-    if last_green_ts < last_edit_ts:
-        return True, "green-before-last-edit"
+    edits_after_green = [e for e in edits if e["ts"] > last_green_ts]
 
-    return False, "green-after-last-edit"
+    if not edits_after_green:
+        return False, "green-after-last-edit"
+
+    if _all_edits_doc_only(edits_after_green):
+        return False, "doc-only-edits-exempt"
+
+    return True, "green-before-last-edit"
 
 
 def _journal_empty_warning_applies(cwd: str, track: dict) -> bool:
@@ -195,17 +242,35 @@ def decide(track: dict, cwd: str = ".") -> tuple[int, str, dict]:
 
     warn = _journal_empty_warning_applies(cwd, track)
 
+    # gate_log entries now carry ts (_now_iso(), same format as
+    # dod_track.py) and agent_id -- this hook is Stop-only (main thread
+    # only), so agent_id is an honest None here, never guessed. Backward
+    # compat: nothing in this file parses gate_log entries back
+    # programmatically (append-only) -- an external reader must use
+    # .get() with a default (documented, not schema-guaranteed).
     if consecutive >= CONSECUTIVE_BLOCK_LIMIT:
         gate_state["consecutive_blocks"] = 0
         track.setdefault("gate_log", []).append(
-            {"action": "skipped_after_2_blocks", "reason": reason, "gate": "main"}
+            {
+                "action": "skipped_after_2_blocks",
+                "reason": reason,
+                "gate": "main",
+                "ts": _now_iso(),
+                "agent_id": None,
+            }
         )
         message = SAFETY_SKIP_MESSAGE + (EMPTY_JOURNAL_WARNING if warn else "")
         return 0, message, track
 
     gate_state["consecutive_blocks"] = consecutive + 1
     track.setdefault("gate_log", []).append(
-        {"action": "blocked", "reason": reason, "gate": "main"}
+        {
+            "action": "blocked",
+            "reason": reason,
+            "gate": "main",
+            "ts": _now_iso(),
+            "agent_id": None,
+        }
     )
     message = BLOCK_MESSAGE + (EMPTY_JOURNAL_WARNING if warn else "")
     return 2, message, track

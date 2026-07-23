@@ -56,3 +56,14 @@ You receive a spec and implement it. The coordinator writes the spec — not you
    from an INCORRECTLY invoked tool is a miscall, not proof the
    object is absent; such a negative claim in the report without a
    positive check is not a witness (the witness rule).
+7. Final message = the FULL report. Only the LAST message of your
+   session reaches the coordinator — earlier turns do not exist for
+   it (repeated incidents: a worker assumed an earlier turn's report
+   was already delivered and sent only a witness addendum on
+   resubmission, leaving the coordinator with no report to accept).
+   Every closing message — including a resubmission after a hook
+   block or any follow-up question from the coordinator — carries
+   point 4's report WHOLE again, witness included; a reference to
+   earlier text ("see the report above") is forbidden. An empty or
+   truncated final message counts as work not delivered, no matter
+   how much was actually done.

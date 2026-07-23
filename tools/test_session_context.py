@@ -241,17 +241,132 @@ def test_main_fail_open_on_broken_journal(tmp_path, capsys):
     assert out[0].startswith("session-context warning:")
 
 
-def test_main_fail_open_when_gateway_dir_missing(tmp_path, capsys):
-    # A repo root with no gateway/ directory at all (config.yaml/budgets.yaml
-    # unreachable) must still fail open, not crash the session start.
+def test_main_full_output_when_gateway_dir_missing(tmp_path, capsys):
+    # preflight_quota.load_config's exists-guard (a documented finding,
+    # class D-0043 alongside load_budgets, which already had this
+    # shape): a repo root with no gateway/ directory at all (config.yaml
+    # unreachable) is this toolkit's own subscription-contour DEFAULT
+    # state, not a crash condition -- the SessionStart output must stay
+    # FULL (NOW/LAST EVENT/BOOT BUDGET/etc still print), not collapse
+    # to a single fail-open warning line the way a missing config.yaml
+    # used to make it do before that guard existed (see
+    # test_preflight_quota.py::test_load_config_missing_file_returns_empty_dict
+    # for the underlying unit-level fix).
     root = tmp_path
     (root / "logs").mkdir()
     (root / "logs" / "routing-log.jsonl").write_text("", encoding="utf-8")
     code = main(root)
     assert code == 0
     out = capsys.readouterr().out.strip().splitlines()
-    assert len(out) == 1
-    assert out[0].startswith("session-context warning:")
+    assert not any(l.startswith("session-context warning:") for l in out)
+    assert any(l.startswith("NOW:") for l in out)
+    assert any(l.startswith("Last calibration:") for l in out)
+    assert any(l.startswith("BOOT BUDGET:") for l in out)
+
+
+def test_main_full_output_when_config_yaml_missing_but_gateway_dir_exists(tmp_path, capsys):
+    # Narrower sibling of the above: gateway/ EXISTS (e.g. holds only a
+    # requests.db) but config.yaml specifically was never generated --
+    # same exists-guard, same expected full output.
+    root = tmp_path
+    (root / "logs").mkdir()
+    (root / "logs" / "routing-log.jsonl").write_text("", encoding="utf-8")
+    (root / "gateway").mkdir()
+    code = main(root)
+    assert code == 0
+    out = capsys.readouterr().out.strip().splitlines()
+    assert not any(l.startswith("session-context warning:") for l in out)
+    assert any(l.startswith("NOW:") for l in out)
+
+
+# ---- config.yaml EXISTING but unparseable (corrupt YAML) ----
+
+
+def test_quota_lines_malformed_config_yaml_returns_single_marker_line(tmp_path):
+    gateway_root = tmp_path / "gateway"
+    gateway_root.mkdir()
+    (gateway_root / "config.yaml").write_text("key: [unclosed\n", encoding="utf-8")
+    lines = sc.quota_lines(gateway_root)
+    assert len(lines) == 1
+    assert lines[0].startswith("quota: config unreadable (")
+    assert lines[0].isascii()
+    assert "\n" not in lines[0]
+
+
+def test_quota_lines_malformed_config_yaml_reason_single_line_even_if_error_is_multiline(tmp_path):
+    gateway_root = tmp_path / "gateway"
+    gateway_root.mkdir()
+    (gateway_root / "config.yaml").write_text("key: [unclosed\n", encoding="utf-8")
+    lines = sc.quota_lines(gateway_root)
+    assert len(lines) == 1
+    assert len(lines[0].splitlines()) == 1
+
+
+def test_main_survives_malformed_config_yaml_with_real_context(tmp_path, capsys):
+    root = tmp_path
+    (root / "logs").mkdir()
+    (root / "logs" / "routing-log.jsonl").write_text("", encoding="utf-8")
+    gateway = root / "gateway"
+    gateway.mkdir()
+    (gateway / "config.yaml").write_text("key: [unclosed\n", encoding="utf-8")
+    with open(gateway / "budgets.yaml", "w", encoding="utf-8") as f:
+        yaml.safe_dump(BUDGETS, f)
+    code = main(root)
+    assert code == 0
+    out = capsys.readouterr().out.strip().splitlines()
+    assert not any(l.startswith("session-context warning:") for l in out)
+    assert any(l.startswith("NOW:") for l in out)
+    assert any(l.startswith("MODEL:") for l in out)
+    assert any(l.startswith("JOURNAL:") for l in out)
+    assert any(l.startswith("BOOT BUDGET:") for l in out)
+    assert any(l.startswith("quota: config unreadable (") for l in out)
+
+
+# ---- budgets.yaml EXISTING but unparseable ----
+
+
+def test_quota_lines_malformed_budgets_yaml_surfaces_reason_but_keeps_rest(tmp_path):
+    # Unlike a broken config.yaml (blanks quota_lines() to one marker
+    # line), a broken budgets.yaml is guarded INSIDE load_budgets() --
+    # the rest of this section (per-alias QUOTA/REQUESTS from config)
+    # still prints normally alongside the marker.
+    gateway_root = tmp_path / "gateway"
+    gateway_root.mkdir()
+    with open(gateway_root / "config.yaml", "w", encoding="utf-8") as f:
+        yaml.safe_dump(CONFIG, f)
+    (gateway_root / "budgets.yaml").write_text(
+        "quota_windows: [this is not: valid: yaml: at all\n", encoding="utf-8"
+    )
+    conn = sqlite3.connect(gateway_root / "requests.db")
+    conn.execute(REQUESTS_SCHEMA)
+    conn.commit()
+    conn.close()
+
+    lines = sc.quota_lines(gateway_root)
+    assert any(l.startswith("quota: budgets unreadable (") for l in lines)
+    assert any(l.startswith("REQUESTS ") for l in lines)
+
+
+def test_main_survives_malformed_budgets_yaml_with_real_context(tmp_path, capsys):
+    root = tmp_path
+    (root / "logs").mkdir()
+    (root / "logs" / "routing-log.jsonl").write_text("", encoding="utf-8")
+    gateway = root / "gateway"
+    gateway.mkdir()
+    with open(gateway / "config.yaml", "w", encoding="utf-8") as f:
+        yaml.safe_dump(CONFIG, f)
+    (gateway / "budgets.yaml").write_text(
+        "quota_windows: [this is not: valid: yaml: at all\n", encoding="utf-8"
+    )
+    code = main(root)
+    assert code == 0
+    out = capsys.readouterr().out.strip().splitlines()
+    assert not any(l.startswith("session-context warning:") for l in out)
+    assert any(l.startswith("NOW:") for l in out)
+    assert any(l.startswith("MODEL:") for l in out)
+    assert any(l.startswith("JOURNAL:") for l in out)
+    assert any(l.startswith("BOOT BUDGET:") for l in out)
+    assert any(l.startswith("quota: budgets unreadable (") for l in out)
 
 
 def test_main_success_path_prints_lines_and_exits_zero(tmp_path, capsys):

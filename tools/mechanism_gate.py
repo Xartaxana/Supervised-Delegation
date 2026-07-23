@@ -14,7 +14,13 @@ without git):
    English phrasing, CLAUDE.md rule 10) works ONLY from the commit
    message -- a written statement by the committer, the same pattern
    as `dispatch_skipped`. Not looked up in the diff: decision text that
-   quotes the skip syntax would otherwise bypass the gate.
+   quotes the skip syntax would otherwise bypass the gate. Inside the
+   message itself the line counts ONLY as its OWN separate line
+   (^...$ anchor with MULTILINE, indentation by spaces allowed) --
+   otherwise an inline quote of the skip syntax in the middle of the
+   message's prose would silence the whole gate (source deployment's
+   Dog range finding, D-0093); the same anchor already used by
+   TIER_LINE_RE below.
 4. Axis block -- lines "axis N: <verdict>" for EVERY axis of the
    current docs/SIBLING_MAP.md -- looked up in the commit message PLUS
    in the staged diff of ONE file, DECISIONS.md (this template ships a
@@ -101,7 +107,12 @@ MECHANISM_PREFIXES = (
 # commit); ported as English to match the artifact these regexes
 # actually run against.
 AXIS_HEADING_RE = re.compile(r"^##\s+Axis\s+(\d+)", re.MULTILINE)
-SKIP_RE = re.compile(r"axes\s*:\s*not\s+a\s+mechanism\s*\(", re.IGNORECASE)
+# Line anchor (D-0093, source deployment's Dog range): without ^...$/
+# MULTILINE the phrase matched via .search() ANYWHERE in the message --
+# an inline quote of the skip syntax in the middle of prose ("...the
+# line \"axes: not a mechanism (example)\" would bypass...") silenced
+# the whole gate. Symmetric with the already-anchored TIER_LINE_RE.
+SKIP_RE = re.compile(r"^\s*axes\s*:\s*not\s+a\s+mechanism\s*\(", re.IGNORECASE | re.MULTILINE)
 
 
 def parse_axes(map_text: str) -> list[int]:
@@ -160,12 +171,39 @@ def lead_family(binding: str) -> str | None:
     return None
 
 
+def find_tier_declarations(msg: str) -> list[str]:
+    """ALL "tier: <value>" line values in the commit message (not the
+    diff) -- not just the first. Several mechanisms in one commit may
+    each carry their own tier line. SAFE (fail-closed) semantics,
+    chosen deliberately: every found line MUST pass tier_declared_ok
+    (see decide_full below) -- reject if even ONE found line fails to
+    match the binding, even when another (e.g. a real, later) line
+    does match. The alternative ("passes if ANY line matches") was
+    rejected: with MULTIPLE tier lines in one message, it would let one
+    spoofed/quoted matching line mask a REAL mismatched value elsewhere
+    in the same message.
+
+    GUARANTEE-SCOPE CLARIFICATION (source deployment critic t-278(a) --
+    docstring corrected, no code change): "ALL must pass" defends
+    exactly that MULTI-LINE case (a real mismatched line plus a
+    spoofing matching line next to it) -- a SINGLE-LINE spoofer (one
+    fake tier line, no real one present) passes BOTH semantics THE
+    SAME: this function never checks that the declared tier is TRUE,
+    only that its declared FORM matches the binding (truthfulness of
+    the declaration is calibration's job, reconciled against
+    transcripts -- code guarantees the form, a tier above judges the
+    meaning). The actual effect of the chosen semantics is fail-closed
+    on quotes/multiple lines (a false reject is safer than a false
+    accept), not a general anti-spoofing guarantee."""
+    return [m.strip() for m in TIER_LINE_RE.findall(msg)]
+
+
 def find_tier_declaration(msg: str) -> str | None:
-    """The value of the "tier: <value>" line -- from the commit MESSAGE
-    only (not the diff), the same self-declarative pattern as the skip
-    line."""
-    m = TIER_LINE_RE.search(msg)
-    return m.group(1).strip() if m else None
+    """Backward-compat convenience: the value of the FIRST "tier:
+    <value>" line (see find_tier_declarations() for the full
+    all-lines semantics used by decide_full())."""
+    declarations = find_tier_declarations(msg)
+    return declarations[0] if declarations else None
 
 
 def tier_declared_ok(declared: str, binding: str) -> bool:
@@ -192,7 +230,7 @@ def decide(msg: str, block_extra: str, staged: list[str],
         return 0, ""
     if merging:
         return 0, ""
-    if SKIP_RE.search(msg):  # message only -- not looked up in the diff
+    if SKIP_RE.search(msg):  # message only -- not looked up in the diff + own separate line only (anchor, D-0093)
         return 0, ""
     if map_text is None:
         return 1, (f"axis map not found ({MAP_PATH}) -- fail-closed, "
@@ -229,14 +267,18 @@ def decide_full(msg: str, block_extra: str, staged: list[str],
     if not hits or merging or SKIP_RE.search(msg):
         return 0, ""
     binding = resolve_lead_binding(config_text)
-    declared = find_tier_declaration(msg)
-    if declared is None:
+    # ALL found tier lines must pass -- reject if even ONE does not
+    # match the binding (see find_tier_declarations()'s docstring for
+    # the chosen semantics).
+    declared_list = find_tier_declarations(msg)
+    if not declared_list:
         return 1, ("commit touches mechanism files:\n  " + "\n  ".join(hits)
                     + "\nNo \"tier: <value>\" line (lead binding: "
                     + binding + ") -- " + _tier_queue_note())
-    if not tier_declared_ok(declared, binding):
+    bad = [d for d in declared_list if not tier_declared_ok(d, binding)]
+    if bad:
         return 1, ("commit touches mechanism files:\n  " + "\n  ".join(hits)
-                    + "\nNot lead tier: \"tier: " + declared
+                    + "\nNot lead tier: \"tier: " + bad[0]
                     + "\" does not match the binding (" + binding
                     + ") -- " + _tier_queue_note())
     return 0, ""

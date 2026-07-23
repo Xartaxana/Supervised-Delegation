@@ -61,18 +61,66 @@ treated CONSERVATIVELY as NOT doc-only -- the one fail-CLOSED branch
 in an otherwise fail-open file: mistaking "unknown" for "definitely
 just docs" is riskier than one extra block.
 
+consecutive_blocks is ALSO scoped per-agent (gate_state["per_agent"][
+<agent_key>]), not a single session-global counter -- see the
+_FALLBACK_AGENT_KEY docstring above for the class of bug this fixes
+(one worker's exhausted safety valve silently spending itself on a
+different worker's first-ever block in the same session). gate_log
+entries carry ts and agent_id (the deciding worker's own) -- old
+entries without these fields still read back without raising
+(append-only, nothing here parses gate_log entries back
+programmatically).
+
+Doc-only "whole-or-nothing" over edits AFTER the last green run of
+THIS agent (edits_after_green), not over its whole filtered history in
+the track -- ported from the same fix in main_gate.evaluate() (see its
+docstring for the full class-of-bug rationale: an early code edit used
+to void the doc-only exemption forever, even after a green run and a
+purely doc-only tail).
+
 Fail-open: a missing session_id, or an unparseable payload, exits 0
 without side effects, same as the rest of this file set.
 """
 
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
+
+
+def _now_iso() -> str:
+    # Same format as tools/dod_track.py._now_iso().
+    return datetime.now().strftime("%Y-%m-%dT%H:%M:%S.%f")
+
+
+# consecutive_blocks is counted PER-AGENT, not globally. Before this fix
+# the counter was ONE per session (gate_state.consecutive_blocks) -- a
+# worker X that exhausted the safety valve (2 blocks) let its own
+# exhausted counter "spend itself" on a COMPLETELY DIFFERENT worker Y
+# meeting a block for the first time in the same session (fail-open in
+# the wrong direction -- Y would skip a verification it never actually
+# passed). The counter now lives in
+# gate_state["per_agent"][<agent_key>], independent per agent -- the
+# same "own zone" semantics as evaluate()'s per-agent filter.
+# _FALLBACK_AGENT_KEY is the key for the defensive branch (a payload
+# with no agent_id at all -- see evaluate()/decide()).
+_FALLBACK_AGENT_KEY = "__none__"
+
+
+def _agent_state_key(agent_id) -> str:
+    return agent_id if agent_id else _FALLBACK_AGENT_KEY
+
+
+def _default_gate_state() -> dict:
+    return {"consecutive_blocks": 0, "per_agent": {}}
 
 BLOCK_MESSAGE = (
     "Stop blocked: there is no green verification run after the last "
     "edit. Run your DoD check (pytest / your verification command) "
-    "and stop on green."
+    "and stop on green. Re-submission = a COMPLETE final report all "
+    "over again (only your LAST message reaches the coordinator -- "
+    "earlier text in this session is not delivered to it; a reference "
+    "back to it is not a substitute, F-49-class hazard)."
 )
 
 SAFETY_SKIP_MESSAGE = (
@@ -87,11 +135,19 @@ CONSECUTIVE_BLOCK_LIMIT = 2
 # touching ONLY these does not require a verification run.
 DOC_ONLY_EXTENSIONS = {".md", ".json", ".jsonl"}
 
+# Known, code-less dotfiles WITHOUT a suffix (see main_gate.py for the
+# full rationale and the final-list choice against this template's own
+# actual files).
+DOC_ONLY_DOTFILES = {".gitignore", ".gitattributes", ".editorconfig"}
+
 
 def _is_doc_only_file(file_path) -> bool:
     if not isinstance(file_path, str) or not file_path:
         return False  # unknown path -- conservatively NOT doc-only
-    return Path(file_path).suffix.lower() in DOC_ONLY_EXTENSIONS
+    path = Path(file_path)
+    if path.name.lower() in DOC_ONLY_DOTFILES:
+        return True
+    return path.suffix.lower() in DOC_ONLY_EXTENSIONS
 
 
 def _all_edits_doc_only(edits) -> bool:
@@ -109,17 +165,21 @@ def _track_path(cwd: str, session_id: str) -> Path:
 
 def _load_track(path: Path) -> dict:
     if not path.exists():
-        return {"edits": [], "runs": [], "gate_state": {"consecutive_blocks": 0}}
+        return {"edits": [], "runs": [], "gate_state": _default_gate_state()}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
-        return {"edits": [], "runs": [], "gate_state": {"consecutive_blocks": 0}}
+        return {"edits": [], "runs": [], "gate_state": _default_gate_state()}
     if not isinstance(data, dict):
-        return {"edits": [], "runs": [], "gate_state": {"consecutive_blocks": 0}}
+        return {"edits": [], "runs": [], "gate_state": _default_gate_state()}
     data.setdefault("edits", [])
     data.setdefault("runs", [])
-    data.setdefault("gate_state", {"consecutive_blocks": 0})
+    data.setdefault("gate_state", _default_gate_state())
+    # Backward compat: an old track carries only a flat
+    # "consecutive_blocks" (pre-per-agent) -- "per_agent" is added
+    # ALONGSIDE it, the old field is left untouched.
     data["gate_state"].setdefault("consecutive_blocks", 0)
+    data["gate_state"].setdefault("per_agent", {})
     return data
 
 
@@ -144,7 +204,14 @@ def evaluate(track: dict, agent_id: str | None = None) -> tuple[bool, str]:
     but different workers are not told apart from each other here.
 
     Returns (violation: bool, reason: str). reason is for debugging/
-    tests only, not parsed by the caller."""
+    tests only, not parsed by the caller.
+
+    Doc-only "whole-or-nothing" over edits AFTER the last green run of
+    THIS agent (edits_after_green), not over its whole filtered
+    history in the track -- ported from the same fix in
+    main_gate.evaluate() (see its docstring for the full class-of-bug
+    rationale: an early code edit used to void the doc-only exemption
+    forever, even after a green run and a purely doc-only tail)."""
     all_edits = track.get("edits") or []
     if agent_id:
         edits = [e for e in all_edits if e.get("agent_id") == agent_id]
@@ -153,51 +220,70 @@ def evaluate(track: dict, agent_id: str | None = None) -> tuple[bool, str]:
     if not edits:
         return False, "no-edits"
 
-    if _all_edits_doc_only(edits):
-        return False, "doc-only-edits-exempt"
-
     all_runs = track.get("runs") or []
     if agent_id:
         runs = [r for r in all_runs if r.get("agent_id") == agent_id]
     else:
         runs = [r for r in all_runs if r.get("agent_id")]
-    last_edit_ts = max(e["ts"] for e in edits)
 
     green_runs = [r for r in runs if r.get("outcome") == "green"]
+
     if not green_runs:
+        if _all_edits_doc_only(edits):
+            return False, "doc-only-edits-exempt"
         return True, "no-green-run"
 
     last_green_ts = max(r["ts"] for r in green_runs)
-    if last_green_ts < last_edit_ts:
-        return True, "green-before-last-edit"
+    edits_after_green = [e for e in edits if e["ts"] > last_green_ts]
 
-    return False, "green-after-last-edit"
+    if not edits_after_green:
+        return False, "green-after-last-edit"
+
+    if _all_edits_doc_only(edits_after_green):
+        return False, "doc-only-edits-exempt"
+
+    return True, "green-before-last-edit"
 
 
 def decide(track: dict, agent_id: str | None = None) -> tuple[int, str, dict]:
     """Pure decision logic after the track is loaded. agent_id passes
     straight through to evaluate() (see its docstring for the filter
-    semantics). Returns (exit_code, stderr_message, updated_track);
-    updated_track carries the updated gate_state/an appended gate_log
-    event -- writing it to disk is main()'s job."""
+    semantics) AND is used here for per-agent consecutive_blocks (see
+    the _FALLBACK_AGENT_KEY docstring above). Returns (exit_code,
+    stderr_message, updated_track); updated_track carries the updated
+    gate_state/an appended gate_log event -- writing it to disk is
+    main()'s job."""
     violation, reason = evaluate(track, agent_id)
-    gate_state = track.setdefault("gate_state", {"consecutive_blocks": 0})
-    consecutive = gate_state.get("consecutive_blocks", 0)
+    gate_state = track.setdefault("gate_state", _default_gate_state())
+    gate_state.setdefault("per_agent", {})
+    key = _agent_state_key(agent_id)
+    agent_state = gate_state["per_agent"].setdefault(key, {"consecutive_blocks": 0})
+    consecutive = agent_state.get("consecutive_blocks", 0)
 
     if not violation:
         if consecutive:
-            gate_state["consecutive_blocks"] = 0
+            agent_state["consecutive_blocks"] = 0
         return 0, "", track
 
+    # gate_log entries carry ts (_now_iso) and agent_id -- backward
+    # compat: old gate_log entries without these fields read back
+    # without raising (append-only, nothing here parses them back).
     if consecutive >= CONSECUTIVE_BLOCK_LIMIT:
-        gate_state["consecutive_blocks"] = 0
+        agent_state["consecutive_blocks"] = 0
         track.setdefault("gate_log", []).append(
-            {"action": "skipped_after_2_blocks", "reason": reason}
+            {
+                "action": "skipped_after_2_blocks",
+                "reason": reason,
+                "ts": _now_iso(),
+                "agent_id": agent_id,
+            }
         )
         return 0, SAFETY_SKIP_MESSAGE, track
 
-    gate_state["consecutive_blocks"] = consecutive + 1
-    track.setdefault("gate_log", []).append({"action": "blocked", "reason": reason})
+    agent_state["consecutive_blocks"] = consecutive + 1
+    track.setdefault("gate_log", []).append(
+        {"action": "blocked", "reason": reason, "ts": _now_iso(), "agent_id": agent_id}
+    )
     return 2, BLOCK_MESSAGE, track
 
 

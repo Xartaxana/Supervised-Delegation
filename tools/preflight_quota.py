@@ -132,17 +132,69 @@ def parse_ts(ts: str) -> datetime.datetime:
 
 
 def load_config(root: Path) -> dict:
+    """A documented finding (class D-0043, alongside load_budgets right
+    below): a missing config.yaml used to raise FileNotFoundError from
+    the bare open() call. Harmless for this file's own CLI (main()
+    below already wraps its call in a targeted try/except), but a real
+    hole for any OTHER caller with no config.yaml-shaped fallback of
+    its own -- namely session_context.py's quota_lines(), which by
+    design has NO local try/except (it relies on main()'s single
+    fail-open boundary): a missing config.yaml used to take down that
+    SessionStart hook's ENTIRE context output (NOW/MODEL/JOURNAL/BOOT
+    BUDGET/etc, not just the quota lines), because the uncaught
+    exception propagated all the way to that hook's outermost handler,
+    which discards everything gathered so far.
+
+    Same exists-guard shape as load_budgets() right below: the absence
+    of the file is a valid, expected state (a fresh subscription-
+    contour checkout that never generated a gateway/config.yaml is
+    this toolkit's own DEFAULT contour, not a misconfiguration) and
+    gets an honest empty-dict default, not an exception.
+
+    A config.yaml that EXISTS but is not valid YAML is a DIFFERENT
+    failure class (corrupt content, not absence) and is deliberately
+    NOT guarded HERE; yaml.safe_load's own exception (yaml.YAMLError)
+    still propagates unchanged in that case. This function's own
+    caller with no fallback of its own (tools/session_context.py's
+    quota_lines()) catches that exception at ITS OWN boundary instead
+    -- an external guard, not an internal one. load_budgets() right
+    below used to share this exact asymmetry (guard existence only, not
+    parseability) but no longer does: it now has an INTERNAL
+    parse-guard, by deliberate choice -- the two functions are guarded
+    at DIFFERENT layers now, not identically."""
     path = Path(root) / "config.yaml"
+    if not path.exists():
+        return {}
     with open(path, encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
 
 
 def load_budgets(root: Path) -> dict:
+    """An EXISTING-but-unparseable budgets.yaml (corrupt YAML content,
+    NOT absence -- absence already honestly degrades via the
+    exists-guard above) no longer propagates yaml.safe_load's exception
+    to the caller -- instead it returns the SAME default the missing-
+    file branch already returns ({"quota_windows": {}}), PLUS an honest
+    "_parse_error" key (string, the first line of the exception message
+    -- multi-line yaml errors are truncated to one line for a caller
+    that needs a single-line reason) -- a caller that cares about the
+    reason (tools/session_context.py's quota_lines(), see its own
+    docstring) can read and surface it; a caller that ignores it gets
+    EXACTLY the same {"quota_windows": {...}} shape as before. This
+    asymmetry with load_config() (which deliberately does NOT guard
+    parsing, see its own docstring) is DELIBERATE: load_config() is
+    guarded EXTERNALLY, in session_context.py itself; load_budgets() is
+    guarded INTERNALLY, here, by explicit choice."""
     path = Path(root) / "budgets.yaml"
     if not path.exists():
         return {"quota_windows": {}}
-    with open(path, encoding="utf-8") as f:
-        config = yaml.safe_load(f) or {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            config = yaml.safe_load(f) or {}
+    except Exception as e:
+        text = str(e).strip()
+        reason = text.splitlines()[0] if text else type(e).__name__
+        return {"quota_windows": {}, "_parse_error": reason}
     config.setdefault("quota_windows", {})
     return config
 

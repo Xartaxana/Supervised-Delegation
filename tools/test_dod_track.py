@@ -120,6 +120,53 @@ def test_build_fact_bash_verification_command_red_on_ambiguous_output():
     assert entry["outcome"] == "red"
 
 
+def test_determine_outcome_bare_xfailed_is_green_not_red():
+    # The bug this fix closes: a bare substring "failed" (no word
+    # boundary) used to false-match inside "xfailed", turning an honest
+    # xfail submission into a "red" outcome and blocking a clean
+    # dod_gate stop. "2 xfailed" carries no OTHER summary word (no
+    # "passed", no "error", no "Traceback") -- must resolve to green.
+    assert dod_track.determine_outcome({"stdout": "2 xfailed", "stderr": ""}) == "green"
+
+
+def test_determine_outcome_xfailed_alongside_passed_still_green():
+    assert dod_track.determine_outcome(
+        {"stdout": "10 passed, 2 xfailed in 1.23s", "stderr": ""}
+    ) == "green"
+
+
+def test_determine_outcome_word_boundary_does_not_match_failed_as_prefix_of_longer_word():
+    # \bfailed\b must not match "failed" as a PREFIX of a longer token
+    # either (not just as a suffix like "xfailed") -- boundary test on
+    # both sides of the word-boundary fix.
+    assert dod_track.determine_outcome({"stdout": "10 passed, 0 scaffailed", "stderr": ""}) == "green"
+
+
+def test_determine_outcome_real_failed_word_still_red():
+    # The word-boundary fix must not blind the detector to a REAL
+    # standalone "failed" -- the boundary case just beyond xfailed's
+    # false-positive.
+    assert dod_track.determine_outcome({"stdout": "1 failed, 9 passed", "stderr": ""}) == "red"
+
+
+def test_determine_outcome_bare_xpassed_still_green_incidental_substring():
+    # Documented incidental behavior (unchanged by this fix): "xpassed"
+    # matches SUCCESS_INDICATORS_RE only because "passed" occurs inside
+    # it as a substring, same as before.
+    assert dod_track.determine_outcome({"stdout": "1 xpassed", "stderr": ""}) == "green"
+
+
+def test_build_fact_bash_verification_command_xfailed_green():
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {"command": "pytest tools/"},
+        "tool_response": {"stdout": "1 xfailed in 0.5s", "stderr": ""},
+    }
+    kind, entry = dod_track.build_fact(payload)
+    assert kind == "run"
+    assert entry["outcome"] == "green"
+
+
 def test_build_fact_rc_field_overrides_text_when_present():
     payload = {
         "tool_name": "Bash",
@@ -288,6 +335,108 @@ def test_build_fact_edit_file_path_for_each_edit_tool_name():
 
 
 # ---------------------------------------------------------------------
+# Scratchpad-path exclusion from main-edit scope entirely.
+# ---------------------------------------------------------------------
+
+
+def test_build_fact_scratchpad_path_excluded_from_edit_scope():
+    payload = {
+        "tool_name": "Write",
+        "cwd": "D:/Improving_AI/Operating-System-for-LLMs",
+        "tool_input": {
+            "file_path": (
+                "C:/Users/user/AppData/Local/Temp/claude/repo/"
+                "some-session-id/scratchpad/script.py"
+            )
+        },
+    }
+    assert dod_track.build_fact(payload) is None
+
+
+def test_build_fact_scratchpad_uppercase_path_still_excluded():
+    payload = {
+        "tool_name": "Edit",
+        "cwd": "D:/repo",
+        "tool_input": {"file_path": "C:/Temp/Claude/Scratchpad/tmp.py"},
+    }
+    assert dod_track.build_fact(payload) is None
+
+
+def test_build_fact_path_outside_repo_root_excluded_even_without_scratchpad_word():
+    payload = {
+        "tool_name": "Edit",
+        "cwd": "D:/repo",
+        "tool_input": {"file_path": "C:/Windows/Temp/other/file.py"},
+    }
+    assert dod_track.build_fact(payload) is None
+
+
+def test_build_fact_normal_repo_relative_path_not_excluded():
+    payload = {"tool_name": "Edit", "cwd": "D:/repo", "tool_input": {"file_path": "tools/x.py"}}
+    kind, entry = dod_track.build_fact(payload)
+    assert kind == "edit"
+    assert entry["file_path"] == "tools/x.py"
+
+
+def test_build_fact_normal_repo_absolute_path_not_excluded(tmp_path):
+    inner = tmp_path / "tools" / "x.py"
+    payload = {"tool_name": "Edit", "cwd": str(tmp_path), "tool_input": {"file_path": str(inner)}}
+    kind, entry = dod_track.build_fact(payload)
+    assert kind == "edit"
+    assert entry["file_path"] == str(inner)
+
+
+def test_build_fact_scratchpad_word_without_cwd_no_longer_excluded():
+    # (source deployment critic t-278(b), mirrored) DIVERGENCE from
+    # prior behavior, documented not silent: a bare "scratchpad"
+    # substring (no cwd) no longer excludes on its own -- the criterion
+    # is now solely "outside cwd", which cannot be evaluated without
+    # cwd at all -- fail-safe: NOT excluded.
+    payload = {"tool_name": "Write", "tool_input": {"file_path": "/tmp/scratchpad/x.py"}}
+    kind, entry = dod_track.build_fact(payload)
+    assert kind == "edit"
+    assert entry["file_path"] == "/tmp/scratchpad/x.py"
+
+
+def test_build_fact_repo_internal_scratchpad_named_file_not_excluded():
+    # (source deployment critic t-278(b) DoD requirement, mirrored) an
+    # in-repo path whose NAME merely contains "scratchpad" is NOT
+    # excluded from main scope -- cwd matches the root, so "outside cwd"
+    # is false, and the standalone substring branch no longer exists.
+    payload = {
+        "tool_name": "Edit",
+        "cwd": "D:/repo",
+        "tool_input": {"file_path": "D:/repo/tools/scratchpad_utils.py"},
+    }
+    kind, entry = dod_track.build_fact(payload)
+    assert kind == "edit"
+    assert entry["file_path"] == "D:/repo/tools/scratchpad_utils.py"
+
+
+def test_build_fact_no_cwd_and_no_scratchpad_word_not_excluded():
+    payload = {"tool_name": "Edit", "tool_input": {"file_path": "some/relative/path.py"}}
+    kind, entry = dod_track.build_fact(payload)
+    assert kind == "edit"
+    assert entry["file_path"] == "some/relative/path.py"
+
+
+def test_is_scratchpad_path_direct_boundary_cases():
+    # (source deployment critic t-278(b), mirrored) without cwd, a
+    # "scratchpad" name is no longer enough by itself -- the criterion
+    # is entirely "outside cwd", which cannot be evaluated without cwd
+    # -> False (fail-safe).
+    assert dod_track._is_scratchpad_path("C:/x/scratchpad/y.py", None) is False
+    assert dod_track._is_scratchpad_path("C:/x/SCRATCHPAD/y.py", None) is False
+    assert dod_track._is_scratchpad_path(None, "D:/repo") is False
+    assert dod_track._is_scratchpad_path("", "D:/repo") is False
+    assert dod_track._is_scratchpad_path("tools/x.py", "D:/repo") is False
+    # the existing outside-cwd case stays green as before.
+    assert dod_track._is_scratchpad_path("C:/x/scratchpad/y.py", "D:/repo") is True
+    # an in-repo path with "scratchpad" in the name is NOT excluded.
+    assert dod_track._is_scratchpad_path("D:/repo/scratchpad_utils.py", "D:/repo") is False
+
+
+# ---------------------------------------------------------------------
 # echo-JSON subprocess smoke tests.
 # ---------------------------------------------------------------------
 
@@ -401,6 +550,38 @@ def test_echo_json_preserves_unknown_keys_written_by_other_hook(tmp_path):
     assert len(data["edits"]) == 1
     assert data["gate_state"] == {"consecutive_blocks": 1}
     assert data["gate_log"] == [{"action": "blocked", "reason": "no-green-run"}]
+
+
+def test_echo_json_scratchpad_edit_not_recorded_and_does_not_break_doc_only(tmp_path):
+    """A coordinator writing a scratchpad temp script AFTER a doc-only
+    edit must NOT be recorded to the track at all -- so main_gate.py's
+    doc-only "whole-or-nothing" fix still fires on what remains: only
+    the genuine doc-only edit."""
+    session_id = "sess-scratch"
+    cwd = str(tmp_path)
+
+    doc_payload = {
+        "session_id": session_id,
+        "cwd": cwd,
+        "tool_name": "Edit",
+        "tool_input": {"file_path": "README.md"},
+    }
+    r1 = _run_hook(doc_payload, cwd=tmp_path)
+    assert r1.returncode == 0, r1.stderr
+
+    scratch_payload = {
+        "session_id": session_id,
+        "cwd": cwd,
+        "tool_name": "Write",
+        "tool_input": {"file_path": "C:/Users/user/AppData/Local/Temp/claude/xyz/some-session/scratchpad/tmp.py"},
+    }
+    r2 = _run_hook(scratch_payload, cwd=tmp_path)
+    assert r2.returncode == 0, r2.stderr
+
+    track_path = tmp_path / ".claude" / "dod_track" / f"{session_id}.json"
+    data = json.loads(track_path.read_text(encoding="utf-8"))
+    assert len(data["edits"]) == 1
+    assert data["edits"][0]["file_path"] == "README.md"
 
 
 # ---------------------------------------------------------------------

@@ -96,3 +96,13 @@ Your job is to find what's wrong and prove it.
    surface, and no neighboring classes walked, is an unfinished
    finding; siblings outside the diff under review follow rule 5 (the
    map, not a scan).
+15. Final message = the FULL verdict. Only the LAST message of your
+   session reaches the coordinator — earlier turns do not exist for
+   it (repeated incidents: a worker assumed an earlier turn's verdict
+   was already delivered and sent only an addendum on resubmission).
+   EVERY closing message — including a resubmission after a hook block
+   or a follow-up question from the coordinator — carries the verdict
+   WHOLE again: findings with evidence, the trail, the explicit
+   verdict line. "See above" is forbidden; an empty or truncated final
+   message counts as review not delivered, no matter how much was
+   actually checked.

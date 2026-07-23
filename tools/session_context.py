@@ -354,13 +354,69 @@ def gemini_aliases(config: dict) -> list:
 def quota_lines(gateway_root: Path, now: datetime.datetime = None) -> list:
     """One line per 86400s-window alias in budgets.yaml (used/limit +
     up to 3 nearest release moments), plus one line per Gemini alias's
-    24h request count. A failure anywhere here is NOT swallowed locally
-    -- it propagates to main()'s single fail-open boundary by design
-    (see main() docstring)."""
+    24h request count.
+
+    An EXISTING-but-unparseable config.yaml (corrupt YAML content, NOT
+    absence -- preflight_quota.load_config() only guards absence, per
+    its own docstring, and still lets yaml.YAMLError propagate on
+    corrupt content) is caught HERE, locally, and reported as a single
+    "quota: config unreadable (<reason>)" line instead of propagating
+    uncaught to main()'s single fail-open boundary. This is a
+    DELIBERATE, NARROW reversal of this file's general "half a context
+    is worse than none" principle (see main()'s docstring) for JUST
+    this one section: a session losing NOW/MODEL/LAST EVENT/BOOT
+    BUDGET too, over a fault scoped entirely to the quota subsystem's
+    own config file, is a strictly worse outcome than a full context
+    with one line explicitly marked broken. Any OTHER, genuinely
+    unforeseen failure below this point (e.g. an unreadable requests.db)
+    still propagates unchanged to main()'s outer boundary -- this
+    reversal was originally scoped to load_config() alone; a malformed
+    budgets.yaml is a DIFFERENT (and now closed) case:
+    preflight_quota.load_budgets() got its OWN internal parse-guard (see
+    that function's docstring) -- it never raises on corrupt content in
+    the first place, so there is nothing left here to catch for that
+    path. This function surfaces load_budgets()'s honest "_parse_error"
+    key (if present) as one additional "quota: budgets unreadable
+    (<reason>)" line -- see the lines below load_config()'s try/except
+    for that wiring; unlike the config.yaml case, a broken budgets.yaml
+    does NOT blank the rest of quota_lines()'s output, because the
+    failure is caught INSIDE load_budgets() itself, not by unwinding out
+    of this function. ImportError/SyntaxError are deliberately
+    RE-RAISED, not caught here (N4): those
+    mean the quota subsystem ITSELF is unusable (missing yaml, a broken
+    preflight_quota sibling module) -- a different failure class from
+    "this config.yaml's own content is broken" -- and must still reach
+    main()'s single fail-open boundary unchanged."""
     lines = []
-    config = load_config(gateway_root)
+    try:
+        config = load_config(gateway_root)
+    except (ImportError, SyntaxError):
+        raise
+    except Exception as e:
+        # Single-line, ASCII-safe marker: yaml.YAMLError's own str() is
+        # typically MULTI-LINE (a "problem" line plus a "in <file>, line
+        # N, column N" context line) -- splitlines()[0] plus
+        # _ascii_sanitize keep this section's failure honest without
+        # letting it inject extra lines or non-ASCII bytes into the
+        # console output (same invariant as MODEL/OPEN DISPATCH/WIRING).
+        text = str(e).strip()
+        reason = text.splitlines()[0] if text else type(e).__name__
+        return [f"quota: config unreadable ({_ascii_sanitize(reason, 150)})"]
     budgets = load_budgets(gateway_root)
     mapping = alias_provider_models(config)
+
+    # load_budgets() now guards budgets.yaml parsing internally (see its
+    # own docstring in preflight_quota.py) and honestly returns
+    # "_parse_error" instead of raising -- this caller HAS an output
+    # line for the reason, so it shows it: the rest of this section
+    # (per-alias QUOTA/REQUESTS lines, built from config, not budgets)
+    # still prints normally alongside it -- unlike a broken config.yaml
+    # (which blanks this whole function to one marker line), a broken
+    # budgets.yaml does not, because the failure is contained INSIDE
+    # load_budgets() rather than caught here.
+    budgets_error = budgets.get("_parse_error")
+    if budgets_error:
+        lines.append(f"quota: budgets unreadable ({_ascii_sanitize(str(budgets_error), 150)})")
 
     for alias, windows in (budgets.get("quota_windows") or {}).items():
         matching = [w for w in windows if w.get("window_seconds") == QUOTA_WINDOW_SECONDS]

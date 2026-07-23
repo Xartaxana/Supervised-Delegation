@@ -1,0 +1,52 @@
+{
+  "_comment": [
+    "TEMPLATE, not a live allowlist -- tools/escape_check.py reads",
+    "tools/escape_allowlist.json (no '.template' in the name), which does",
+    "NOT ship with this toolkit by default (same convention as",
+    "gateway/config.template.yaml -> gateway/config.yaml).",
+    "",
+    "To use this mechanism: copy this file to escape_allowlist.json next",
+    "to it, delete this '_comment' key, and replace the one example entry",
+    "below with your own real escape/concession clause(s).",
+    "",
+    "Each entry hash-pins ONE permanent escape/concession clause in a",
+    "carrier document (e.g. CLAUDE.md) to the decision-log section that",
+    "authorizes it, so a silent drift between the two is caught",
+    "mechanically. Fields:",
+    "  id             short, unique, human-readable slug for this entry.",
+    "  carrier_file   path (repo-root-relative) to the file quoting the",
+    "                 clause verbatim.",
+    "  carrier_anchor a distinctive substring of the clause, copied",
+    "                 verbatim from carrier_file (whitespace-folded before",
+    "                 comparison, so a markdown reflow does not break it).",
+    "  decision_id    the D-NNNN id of the decision that authorizes this",
+    "                 clause (must match ^D-\\d{4}$).",
+    "  decision_file  path to the VERBOSE, section-headed decision log",
+    "                 that carries this id as a '## D-NNNN[ -- title]'",
+    "                 heading. NOTE: this toolkit's own DECISIONS.md is a",
+    "                 terse one-line-per-decision index by design and",
+    "                 does NOT have such headings -- this mechanism needs",
+    "                 a verbose decision document of its own before any",
+    "                 real entry can be added (see tools/escape_check.py's",
+    "                 DEFAULT_DECISION_FILE_REL comment for the same",
+    "                 point). Point decision_file at whatever that",
+    "                 document ends up being for your deployment.",
+    "  section_sha256 sha256 hex digest of the decision section, computed",
+    "                 by 'python tools/escape_check.py --hash D-NNNN'",
+    "                 once decision_file exists and has that section.",
+    "  affirmed       YYYY-MM-DD the entry was last reviewed/re-affirmed.",
+    "  note           optional free-text context for a future reader."
+  ],
+  "entries": [
+    {
+      "id": "example-entry-replace-me",
+      "carrier_file": "CLAUDE.md",
+      "carrier_anchor": "replace this with a verbatim substring of your real clause",
+      "decision_id": "D-0000",
+      "decision_file": "docs/DECISIONS_FULL.md",
+      "section_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "affirmed": "2026-07-22",
+      "note": "placeholder example -- this entry FAILS by design (D-0000/docs/DECISIONS_FULL.md do not exist) until replaced with real values, so running escape_check.py against an un-edited copy of this template fails loudly instead of silently reporting a fake OK"
+    }
+  ]
+}

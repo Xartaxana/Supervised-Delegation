@@ -290,6 +290,83 @@ for the period, and diffs to DECISIONS.md.
     fired given the track's own contents, is a finding about the gate
     itself, not about the session it blocked.
 
+Numbering note: checks 20 and 21 below are this deployment's own
+sequence, continuing straight on from 19 (no numbering gap) -- they are
+the local equivalents of a source deployment's checks 30 and 31, ported
+adapted to this file's own numbering rather than reproduced under
+matching numbers, since this protocol's own sequence has never mirrored
+a source protocol number-for-number (see checks 15/17, reserved
+placeholders unique to this file). The correspondence is recorded here,
+once, rather than in every cross-reference below.
+
+20. **Leaf-routing judge acceptance (rule 13).** Mechanism: rule 13 of
+    CLAUDE.md's core policy, a `"judge"` value in the journal
+    validator's `BASIS_VALUES`, and the judge-acceptance tooling class
+    it depends on. Window check: (a) liveness -- rule 13 is present in
+    CLAUDE.md; `"judge"` is in the validator's basis whitelist; judge
+    calibration is alive (full agreement on the labeled set in
+    gateway/judge_calibration.json, procedure in PROCESS/
+    JUDGE_CALIBRATION_PROTOCOL.md). BOTH judge forms in use this window
+    are checked: the gateway alias, and any subscription judge-subagent
+    -- the subagent's system prompt is VERBATIM equal to
+    `JUDGE_SYSTEM_PROMPT` in gateway/shadow_eval.py (a drifted prompt is
+    a finding, not a judge), and the equivalence run itself is on
+    record (journal or the calibration protocol's own log). (b)
+    event-by-event -- every `accepted` carrying `basis: "judge"` is
+    genuinely leaf-class (recon, or implementation to a written spec);
+    a mechanism/policy/integration accepted under a judge basis is a
+    self-certification finding (the same class as a role-vs-tier
+    violation, CLAUDE.md's "Role != tier"); spot-check judge reject/
+    accept rationales for hallucination (citing a symbol or file that
+    does not exist) -- a systematic pattern is grounds to reconsider the
+    judge binding by an explicit decision, never silently. (c)
+    economics -- the window's judge calls cost a small fraction of the
+    coordinator-tier acceptance they stand in for (Rule #1); a rising
+    share of failed-after-escalation leaf tasks is a finding about the
+    construction itself, not about one task. (d) siblings -- any
+    deployment-specific judge/leaf-routing queue entries have not gone
+    stale.
+21. **Durable persistence of accepted deliverables (session-handoff
+    step 2a).** Class: "deliverable drift" -- work accepted against the
+    working tree (a real witness at the time) gets washed out by a
+    later wide checkout/reset before the commit that should have
+    carried it, and neither the witness nor a critic verdict re-checks
+    persistence after the fact. Window check: (a) for every
+    `accepted(builder)` in the journal, the entity the witness names (a
+    test, a function, a file) exists in the COMMITTED HEAD (`git show`
+    / grep against HEAD; on doubt, `git log -S` by name -- a carrying
+    commit exists and was not reverted). A real witness with the entity
+    absent from HEAD is drift -- a finding, plus a `defect_found` (`ref`
+    pointing at the original `accepted`). (b) liveness of the
+    evening-side check -- session-handoff's step 2a is in place (a
+    targeted lookup, not a re-derivation); systematic drift while step
+    2a is live and being run is a discipline leak -- evidence for
+    promoting the check into a code gate. (c) a disputed "did the
+    artifact ever exist" is settled by runtime witnesses outside git (a
+    test-cache entry, a file mtime, a process/track log) -- the same
+    forensic class as the check above.
+
+22. **Ledger drift and completeness (D-0091).** Mechanism: the
+    adoption ledger records the kit snapshot revision and mirrors the
+    current template's row nomenclature. Violation: an "adopt" row
+    whose mechanism is absent or stale in the tree; a template row
+    missing from the ledger entirely (a dropped row hides forever —
+    the F-52 class); a recorded revision no upgrade batch has
+    reconciled. Window check: (a) every current template row has a
+    ledger row (completeness); (b) spot-check adopt rows against the
+    tree (mechanism present, wired); (c) the recorded kit revision
+    exists, and the last upgrade batch's delta was decided row by
+    row — at least deferred, silence is not a decision. For (b),
+    "wired" is explicit (D-0092, wiring drift): the row's mechanism
+    is not just present on disk but actually wired — its hooksPath
+    entry / settings hook / invocation path exists; an adopt row
+    whose wiring silently fell off is a finding even when the file
+    itself is still in the tree. Continuous pair of (b): the
+    deployment's SessionStart wiring check reads this ledger's adopt
+    rows, not only the configured hooks. The
+    staff-side pair of this check is the kit maintainer's port-batch
+    delta check (their calibration protocol).
+
 ## Closing out a run
 
 DELEGATION_TABLE.md statuses move only on this data (Update Rule 1;

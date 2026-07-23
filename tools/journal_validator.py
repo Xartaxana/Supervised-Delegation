@@ -68,9 +68,26 @@ log" section):
     in {scout, builder, critic} ONLY accepted additionally requires
     tier(by) > tier(agent) (haiku<sonnet<opus<fable by agent:
     scout=haiku, builder=sonnet, critic=opus), or a typed "basis"
-    field in {"critic", "queued-to-lead"}. Read literally, the spec
-    requires the tier/basis check only for accepted, not rejected --
-    rejected just carries "by" with no further check.
+    field in {"critic", "queued-to-lead"}, or basis=="judge" -- but
+    ONLY when the line's own "category" is "recon" or "implementation"
+    (a leaf-class dispatch per this toolkit's own CLAUDE.md, "Leaf
+    routing": "Judge acceptance is legitimate ONLY for leaf-class
+    dispatches (recon, or implementation to a written spec)"). basis
+    "judge" on any other category is NOT a valid basis -- it falls
+    through to the tier check like any other agent/by pair. Read
+    literally, the spec requires the tier/basis check only for
+    accepted, not rejected -- rejected just carries "by" with no
+    further check.
+
+    NOTE (history): at the time of this port the reference validator
+    (the staff repo's own tools/journal_validator.py) accepted
+    basis=="judge" UNCONDITIONALLY, despite its own CLAUDE.md
+    documenting the leaf-class restriction -- this port implemented
+    the restriction first, from the toolkit's OWN CLAUDE.md text
+    (quoted above). The staff validator was then brought to the same
+    leaf-gated form the same day (staff fix t-276: LEAF_CATEGORIES,
+    a dedicated R13 message) -- both siblings of the pair are now
+    converged; this note stays as provenance, not as a live delta.
 12. Every NEW delegated line carries worker_ref -- a non-empty handle
     by which the next session finds the worker/result; catches a
     phantom delegated whose worker was never launched.
@@ -102,6 +119,11 @@ FAILURE_CLASSES = {"spec", "capability", "recon", "tooling"}
 TIER_ORDER = {"haiku": 0, "sonnet": 1, "opus": 2, "fable": 3}
 AGENT_TIER = {"scout": "haiku", "builder": "sonnet", "critic": "opus"}
 BASIS_VALUES = {"critic", "queued-to-lead"}
+JUDGE_BASIS_VALUE = "judge"
+# Leaf-class categories a "judge" basis is legal for (rule 11 / this
+# toolkit's own CLAUDE.md "Leaf routing" section, R13/D-0087-equivalent):
+# "recon, or implementation to a written spec".
+LEAF_CATEGORIES = {"recon", "implementation"}
 
 TASK_ID_RE = re.compile(r"^t-(\d{3,})$")
 # Dead-worker replacement marker (rule 9c2): the literal substring
@@ -246,7 +268,11 @@ def _matrix_d0058_violation(event: str, agent, by: str, obj: dict) -> str | None
     """Rule 11. Returns the violation text or None. Applies ONLY to
     accepted (a literal reading of the spec: "accepted is legal
     when..."; rejected carries "by" with no further tier/basis
-    check)."""
+    check).
+
+    basis=="judge" is valid ONLY when this line's own "category" is a
+    leaf-class category (LEAF_CATEGORIES) -- any other basis value is
+    checked against BASIS_VALUES unconditionally, as before."""
     if event != "accepted":
         return None
     if agent == "lead":
@@ -257,13 +283,17 @@ def _matrix_d0058_violation(event: str, agent, by: str, obj: dict) -> str | None
     by_tier = TIER_ORDER.get(by)
     ok_tier = by_tier is not None and by_tier > TIER_ORDER[agent_tier]
     basis = obj.get("basis")
-    ok_basis = basis in BASIS_VALUES
+    if basis == JUDGE_BASIS_VALUE:
+        ok_basis = obj.get("category") in LEAF_CATEGORIES
+    else:
+        ok_basis = basis in BASIS_VALUES
     if ok_tier or ok_basis:
         return None
     return (
         f"role-vs-tier acceptance matrix: agent={agent!r} accepted by={by!r} "
         f"(not strictly above the executor's tier) and no valid basis "
-        f"(need critic/queued-to-lead)"
+        f"(need critic/queued-to-lead, or judge on a leaf-class dispatch "
+        f"[category recon/implementation])"
     )
 
 
