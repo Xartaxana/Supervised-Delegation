@@ -115,6 +115,36 @@ target content of the file (a delta line cannot express the file's
 invariants — the `set -e` lesson of finding F-53), and the delivery
 ends with the same probe.
 
+## Escape allowlist (both paths)
+
+Right alongside `core.hooksPath` (step 3 of either path, above) — do
+this BEFORE your first commit, not after. `.githooks/pre-commit` runs
+`tools/escape_check.py` immediately after `journal_validator.py`
+(same `set -e` chain, same fail-closed behavior — see "A note on your
+first commit", above), and this toolkit ships only a template, not a
+live allowlist: `tools/escape_allowlist.json` does not exist yet on a
+fresh checkout, so the very first commit you attempt once
+`core.hooksPath` is set will be rejected by `escape_check.py` until
+you instantiate it.
+
+1. Copy `tools/escape_allowlist.template.json` to
+   `tools/escape_allowlist.json` (same convention as
+   `gateway/config.template.yaml` → `gateway/config.yaml` — the
+   template itself is never read by the live check).
+2. Replace the one example entry (`entries[0]`,
+   `"id": "example-entry-replace-me"`) with your own real
+   escape/concession clause(s) — or leave `"entries": []` empty if you
+   have none yet (schema-valid; `escape_check.py` accepts an empty
+   list). See the copied file's own `_comment` key for the
+   field-by-field instructions (`carrier_file`/`carrier_anchor`/
+   `decision_id`/`decision_file`/`section_sha256`/`affirmed`/`note`);
+   delete `_comment` itself once you've read it — it's not part of the
+   live schema.
+
+Skipping this isn't a later-failure risk, it blocks your very first
+commit outright: `escape_check.py`'s non-zero exit stops the commit
+the same way an invalid `journal_validator.py` line would.
+
 ## Onboarding
 
 Both paths converge here: run the onboarding skill

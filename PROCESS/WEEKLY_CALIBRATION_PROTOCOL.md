@@ -236,9 +236,52 @@ for the period, and diffs to DECISIONS.md.
     guard line is a leak of the discipline-only trigger (evidence for
     promoting it into a code gate). Guard liveness: a known-bad replay
     fed to the guard must come back REJECTED.
-15. Reserved for deployment-specific checks (register yours here —
-    see the mechanism rule: every mechanism registers its failure
-    detector).
+15. **Repeated critic findings -> codification, with mandatory
+    attribution.** (i) Base: verdicts of the window are walked for a
+    finding CLASS that recurs 2 or more times (including findings that
+    never escalated all the way to a formal defect) -- a recurring
+    class is codified: a line in a spec/builder template, a new axis
+    in the symmetry map, or a rule (the fix-the-class-not-the-instance
+    rule, extended here to review findings, not only code defects); a
+    repeat of an ALREADY-codified class is itself a finding -- the
+    codification leaked. (ii) MANDATORY ATTRIBUTION: every verdict of
+    the window carrying a rework/blocker note, and every `rejected`
+    event, is attributed to its source -- a spec defect of the
+    DISPATCHER (a gap/contradiction in the spec, an unnamed item in
+    the given basket) | an error of the performer | external. (iii)
+    Cluster the attributed causes; record the cluster COUNT in the
+    `calibrated` event's notes. (iv) Landing: a dispatcher-side cause
+    recurring 2 or more times in the SAME run is landed as a line/
+    refinement of the five-point pre-dispatch checklist (rule 11's own
+    checklist; this deployment keeps no separate checklist file — a
+    recorded choice against a diverging duplicate) -- or an explicit
+    line `not codified: <why>`. (v) The measurable goal: a class that
+    has landed in the checklist produces no repeat rework in the NEXT
+    window; a repeat is itself a codification leak. (vi) This check's
+    OWN failure detector: a window with rework/reject verdicts but no
+    cluster count in the `calibrated` event's notes is a leak of this
+    very norm.
+
+    Edge behavior (named, not left to the runner's guess): an EMPTY
+    window (no rework/reject verdicts at all) records an explicit line
+    `no rework/reject verdicts in the window` rather than silence. An
+    AMBIGUOUS source (more than one plausible cause) is attributed to
+    the class `unattributed`, with the ambiguity itself named in
+    notes. A verdict whose cause chains through BOTH the dispatcher and
+    the performer (e.g. a vague spec that the performer also
+    misread) is attributed to the EARLIEST cause in the chain (the
+    dispatcher) as primary, with the second cause recorded alongside,
+    not silently dropped. At the landing THRESHOLD (exactly 2
+    repeats): landing into the checklist is mandatory, same as any
+    higher count; at 1 repeat: record the class, do not land it yet
+    (landing needs the SECOND occurrence to confirm a pattern, not a
+    single data point). Landing a class into the pre-dispatch
+    checklist is itself an edit of CLAUDE.md -- Lead-tier work, named
+    explicitly, not delegated.
+
+    Acceptance of this check's own output is TEXTUAL (a witness run
+    does not cover a judgment call like class/attribution) -- a named,
+    accepted limit of this check, not an oversight.
 16. **Two-pass external recon.** New RELATED_WORK entries for the
     period (and queue entries referencing an external survey): does
     each one name Lead's own second-pass trail — which files of the

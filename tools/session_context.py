@@ -64,11 +64,53 @@ Hard constraints (all load-bearing):
   hang waiting for input that will never come).
 
 Registered as the SessionStart hook via .claude/settings.json.
+
+--- ported from HQ 2026-07-23 (staff VG-1, two-part addition) ---
+
+Part A: HOOKSPATH AUTOFIX (`hooks_path_autofix_line`). If
+core.hooksPath comes back UNSET, this hook attempts a one-line
+self-heal -- `git config --local core.hooksPath .githooks` -- before
+falling back to a plain warning; a confirmed success prints "WIRING
+AUTOFIX: core.hooksPath set to .githooks" instead. Deliberately scoped
+to the UNSET case only: when core.hooksPath is already set to some
+OTHER path, that is somebody's existing configuration (human or a
+prior session) and is left alone -- only a genuinely empty value is
+treated as safe to wire up automatically. This is the ONE write action
+in the wiring area; tools/wiring_check.py (a separate, more general
+auditor, see its own module docstring) is READ-ONLY by design and
+never attempts this fix itself -- running it right after a
+SessionStart that just autofixed hooksPath will usually find it
+already resolved.
+
+Part B: CLOCK DRIFT (`clock_drift_line`). When the journal tail
+event's ts is more than `_CLOCK_DRIFT_THRESHOLD_SECONDS` (60s) AHEAD
+of the system clock, prints "CLOCK DRIFT: ..." so a session notices a
+clock mismatch between environments instead of silently producing
+non-monotonic ts ordering on its next journal append. Fail-open on an
+empty journal, a missing/blank tail ts, or a tail ts that does not
+parse as the journal's naive-ISO format.
+
+--- WIRING summary line (mirrors the staff channel; see
+tools/wiring_check.py for the actual checks) ---
+
+`wiring_summary_line` calls tools/wiring_check.py's `check_wiring()`
+and folds its result into ONE line here: "WIRING: OK" when clean, or
+"WIRING: N issue(s), run tools/wiring_check.py --check" for the
+details, rather than reproducing wiring_check's full multi-line report
+inline -- this hook's own MAX_LINES budget (25 lines total, shared with
+NOW/MODEL/JOURNAL/QUOTA/BOOT BUDGET) is not the place for a
+potentially-long issue list; `python tools/wiring_check.py --check`
+prints the full breakdown on demand. Wrapped in its own try/except
+(same pattern as quota_lines()'s local catch): a wiring_check import or
+call failure must not blank NOW/MODEL/JOURNAL/etc. via main()'s outer
+boundary -- it degrades to one "WIRING: check unavailable (...)" line
+instead.
 """
 
 import datetime
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -201,6 +243,51 @@ def last_event_line(events: list) -> str:
     return (
         f"LAST EVENT: ts={e.get('ts')} event={e.get('event')}"
         f" agent={e.get('agent')} task_id={e.get('task_id') or '-'}"
+    )
+
+
+# Ported from HQ 2026-07-23 (staff VG-1 part B): threshold (seconds)
+# above which the tail journal event's ts being AHEAD of the system
+# clock is worth a line of its own, rather than silent noise from
+# ordinary sub-second/sub-minute scheduling jitter between when an
+# event was written and when this hook happens to run.
+_CLOCK_DRIFT_THRESHOLD_SECONDS = 60
+
+
+def clock_drift_line(events: list, now: datetime.datetime = None) -> str:
+    """Ported from HQ 2026-07-23 (staff VG-1 part B). NOW and LAST EVENT
+    are printed side by side already; this makes an actual DRIFT
+    between them visible instead of leaving a session to notice the
+    mismatch by eye: if the tail event's ts is MORE than
+    _CLOCK_DRIFT_THRESHOLD_SECONDS ahead of `now`, any event this
+    session appends will sit, by ts, BEFORE that tail line -- not a
+    rewrite of the past, but the same non-monotonic-journal symptom a
+    reader would otherwise blame on a rewrite. Returns '' (no line)
+    when the journal is empty, the tail event carries no/blank ts, that
+    ts is not parseable as the journal's naive-ISO format, or the drift
+    is at or under the threshold -- fail-open by construction, same
+    contract as last_calibration_line()'s own parse_ts() use (a
+    ValueError/TypeError from parse_ts on a malformed ts is caught
+    here; an ImportError/SyntaxError from the deferred preflight_quota
+    import itself is deliberately NOT caught, same as quota_lines()'s
+    own re-raise of those two -- see the module-level N4 comment)."""
+    if not events:
+        return ""
+    now = now or datetime.datetime.now()
+    ts = events[-1].get("ts")
+    if not ts:
+        return ""
+    try:
+        last_ts = parse_ts(ts)
+    except (ValueError, TypeError, AttributeError):
+        return ""
+    drift_seconds = (last_ts - now).total_seconds()
+    if drift_seconds <= _CLOCK_DRIFT_THRESHOLD_SECONDS:
+        return ""
+    drift_minutes = round(drift_seconds / 60)
+    return (
+        f"CLOCK DRIFT: last journal ts is {drift_minutes} min ahead of system clock"
+        " -- new events will be non-monotonic (D-0089: do not rewrite past lines)"
     )
 
 
@@ -623,6 +710,144 @@ def boot_budget_lines(root: Path) -> list:
     return lines
 
 
+# ---------------------------------------------------------------------------
+# Ported from HQ 2026-07-23 (staff VG-1 part A): HOOKSPATH AUTOFIX
+# ---------------------------------------------------------------------------
+
+_GITHOOKS_DIRNAME = ".githooks"
+_REQUIRED_GITHOOKS = ("pre-commit", "commit-msg")
+
+# A fact string returned by _try_hookspath_autofix() on a CONFIRMED
+# success is prefixed with this marker so hooks_path_autofix_line() can
+# tell it apart from an ordinary warning fact and render it as "WIRING
+# AUTOFIX: ..." instead of "WIRING WARNING: ...".
+_AUTOFIX_FACT_PREFIX = "AUTOFIX: "
+
+
+def _try_hookspath_autofix(root: Path, reason: str) -> str:
+    """core.hooksPath came back UNSET -- before falling back to the
+    plain 'core.hooksPath not set' warning, attempt the one-line
+    self-heal `git config --local core.hooksPath .githooks` (relative
+    path, LOCAL repo config only -- never --global/--system) and
+    recheck.
+
+    Returns the AUTOFIX fact (_AUTOFIX_FACT_PREFIX + "core.hooksPath
+    set to .githooks") on a confirmed success: the `git config` write
+    itself exited 0 AND both required hook files are actually present
+    on disk under .githooks/ afterward (setting hooksPath to a
+    directory whose hook files don't exist would "succeed" as a git
+    operation while leaving the wiring exactly as broken as before).
+    Any other outcome returns the ORIGINAL 'core.hooksPath not set'
+    warning fact with an "; autofix failed: <reason>" suffix -- git
+    itself unavailable/erroring (the write call raises), the config
+    being unwritable (the write call exits non-zero), or the required
+    hook files missing even after a successful config write. Never
+    raises -- same fail-open contract as the rest of this hook.
+
+    Deliberately attempted ONLY for the UNSET case -- NOT when
+    core.hooksPath already resolves to some OTHER path: an
+    already-present value is somebody's explicit prior configuration
+    (human or an earlier session), silently overwriting it is exactly
+    the harm this carve-out exists to prevent. Only a genuinely unset
+    hooksPath is treated as "nothing to preserve, safe to wire up
+    automatically"."""
+    base_warning = f"core.hooksPath not set -- {reason}"
+    try:
+        set_result = subprocess.run(
+            ["git", "config", "--local", "core.hooksPath", str(_GITHOOKS_DIRNAME)],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception as e:
+        detail = _ascii_sanitize(f"git config write failed ({type(e).__name__})", 120)
+        return f"{base_warning}; autofix failed: {detail}"
+
+    if set_result.returncode != 0:
+        stderr_lines = (set_result.stderr or "").strip().splitlines()
+        raw_detail = stderr_lines[0] if stderr_lines else f"exit code {set_result.returncode}"
+        detail = _ascii_sanitize(raw_detail, 120)
+        return f"{base_warning}; autofix failed: git config write error ({detail})"
+
+    missing = [
+        name
+        for name in _REQUIRED_GITHOOKS
+        if not (root / _GITHOOKS_DIRNAME / name).is_file()
+    ]
+    if missing:
+        missing_str = _ascii_sanitize(", ".join(missing), 120)
+        return (
+            f"{base_warning}; autofix set core.hooksPath but required"
+            f" file(s) still missing: {missing_str}"
+        )
+
+    return f"{_AUTOFIX_FACT_PREFIX}core.hooksPath set to {_GITHOOKS_DIRNAME}"
+
+
+def hooks_path_autofix_line(root: Path) -> str:
+    """Checks core.hooksPath and, ONLY when it is UNSET, attempts the
+    self-heal above and returns one WIRING line reporting the outcome
+    ("WIRING AUTOFIX: ..." on success, "WIRING WARNING: ..." on
+    failure). When core.hooksPath is already set to ANYTHING (correct
+    or not), returns '' -- that broader mismatch is
+    tools/wiring_check.py's job to report via wiring_summary_line()
+    below, not duplicated here. Never raises: a git invocation that
+    fails to even run degrades to '' (silently deferring the whole
+    fact to wiring_summary_line(), which runs its own independent git
+    check and reports it there instead of this function guessing at a
+    warning message for a git failure it cannot itself diagnose)."""
+    reason = "journal_validator/mechanism_gate do not run on commits"
+    try:
+        result = subprocess.run(
+            ["git", "config", "core.hooksPath"],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        return ""
+
+    raw = (result.stdout or "").strip()
+    if result.returncode != 0 or not raw:
+        fact = _try_hookspath_autofix(root, reason)
+        if fact.startswith(_AUTOFIX_FACT_PREFIX):
+            return f"WIRING {fact}"
+        return f"WIRING WARNING: {fact}"
+
+    # Already set to something -- correct or not, left to
+    # wiring_summary_line()/tools/wiring_check.py to report; no
+    # duplicate line from here.
+    return ""
+
+
+# ---------------------------------------------------------------------------
+# WIRING summary line -- mirrors the staff channel via tools/wiring_check.py
+# ---------------------------------------------------------------------------
+
+
+def wiring_summary_line(root: Path) -> str:
+    """Calls tools/wiring_check.py's check_wiring() and folds the
+    result into ONE line (see the module docstring's "WIRING summary
+    line" section for why this stays a single line rather than the
+    full multi-line report). Wrapped in its own try/except -- an
+    import or call failure here must not blank NOW/MODEL/JOURNAL/etc.
+    via main()'s single outer boundary, same rationale as
+    quota_lines()'s local catch."""
+    try:
+        import wiring_check
+
+        result = wiring_check.check_wiring(root)
+    except Exception as e:
+        return f"WIRING: check unavailable ({type(e).__name__})"
+
+    if result.get("ok"):
+        return "WIRING: OK"
+    count = len(result.get("issues") or [])
+    return f"WIRING: {count} issue(s), run tools/wiring_check.py --check"
+
+
 def build_context_lines(
     root: Path = None,
     now: datetime.datetime = None,
@@ -636,6 +861,10 @@ def build_context_lines(
 
     lines = [now_line(now), model_line(stdin_payload), last_event_line(events)]
 
+    drift_line = clock_drift_line(events, now)
+    if drift_line:
+        lines.append(drift_line)
+
     open_since = open_degradation_window(events)
     if open_since:
         lines.append(f"OPEN DEGRADATION WINDOW since {open_since}")
@@ -645,6 +874,11 @@ def build_context_lines(
     lines.append(last_calibration_line(events, now))
     lines.extend(quota_lines(gateway_root, now))
     lines.extend(boot_budget_lines(root))
+
+    autofix_line = hooks_path_autofix_line(root)
+    if autofix_line:
+        lines.append(autofix_line)
+    lines.append(wiring_summary_line(root))
 
     return lines[:MAX_LINES]
 

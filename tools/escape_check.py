@@ -33,6 +33,13 @@ Usage:
         does not exist or is duplicated, or if the decision file cannot be
         read/decoded.
 
+    python tools/escape_check.py --hash-judge-prompt
+        Print the sha256 hex digest of JUDGE_SYSTEM_PROMPT as found in
+        gateway/shadow_eval.py (the fixed source+symbol for this toolkit)
+        and exit 0. Exit 1 if the symbol is missing/duplicated/not a string
+        literal, the source file has a syntax error, or the source file
+        cannot be read/decoded.
+
     Any other invocation (unknown flag, wrong argument count) is a usage
     error: exit 2, usage line on stderr, nothing is validated (fail-closed).
 
@@ -92,8 +99,46 @@ liveness, is exactly what the pinned hash exists to protect, so leg (c)
 must stay sensitive to a whitespace-only reflow of the decision text even
 though leg (a) is deliberately blind to the same class of change in the
 carrier.
+
+JUDGE PROMPT PIN: a second, independent pin class, pinning
+gateway/shadow_eval.py's JUDGE_SYSTEM_PROMPT constant to the sha256
+recorded in the allowlist's top-level "judge_prompt_pin" section.
+Motive: the judge-calibration protocol requires a subscription
+judge-subagent's prompt to be VERBATIM-equal to JUDGE_SYSTEM_PROMPT
+before its verdicts count -- today that equality is discipline, not a
+machine check, and a silent drift of the constant would invalidate
+every judge verdict taken on the strength of a calibration run without
+anyone noticing. Once this section exists in the allowlist, its
+ABSENCE is itself a fail-closed violation -- there is no "pin not
+configured, skip the check" path (same fail-closed design as an
+altogether-missing allowlist file).
+
+Extraction is AST-based, NOT `import gateway.shadow_eval`: gateway/
+modules use cwd-relative imports (see CLAUDE.md command hygiene) that
+break when imported from tools/'s working directory, and importing
+arbitrary repo code from a pre-commit-gate script is its own hazard
+independent of that. The source file is read as text (read_text_file(),
+same fail-closed UTF-8 decode as everywhere else in this module),
+CRLF/CR normalized with the SAME _normalize_newlines() used for
+decision-section extraction, then ast.parse()'d. Only a MODULE-LEVEL
+(top-of-file, tree.body) assignment or annotated assignment to the
+pinned symbol counts; a same-named local inside a function/class body
+is not a match. Exactly one such assignment must exist (zero is
+"not_found", more than one is "duplicate", both fail-closed, mirroring
+the decision-section duplicate handling); its value must be an
+ast.Constant string (Python's parser already folds adjacent
+string-literal concatenation into a single Constant node at parse
+time, so a multi-line concatenated literal is read as one string with
+no special-casing needed) -- anything else (a name, an f-string, a
+computed expression) is "not_a_string", also fail-closed. The digest
+is sha256 over the UTF-8 encoding of that string value.
+
+CLI mode `--hash-judge-prompt` prints the sha256 of JUDGE_SYSTEM_PROMPT
+as found in gateway/shadow_eval.py, the same "compute what a human
+pastes into the pin" role --hash D-XXXX plays for decision sections.
 """
 
+import ast
 import hashlib
 import json
 import os
@@ -103,6 +148,9 @@ import sys
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(SCRIPT_DIR)
 ALLOWLIST_PATH = os.path.join(SCRIPT_DIR, "escape_allowlist.json")
+DEFAULT_JUDGE_PROMPT_SOURCE_REL = os.path.join("gateway", "shadow_eval.py")
+DEFAULT_JUDGE_PROMPT_SOURCE_ABS = os.path.join(REPO_ROOT, DEFAULT_JUDGE_PROMPT_SOURCE_REL)
+DEFAULT_JUDGE_PROMPT_SYMBOL = "JUDGE_SYSTEM_PROMPT"
 # FORMAT MISMATCH FLAGGED, NOT SILENTLY PAPERED OVER: this default
 # assumes a VERBOSE decision log with "## D-NNNN[ -- title]" section
 # headers (the reference implementation's docs/DECISIONS_FULL.md
@@ -133,6 +181,8 @@ REQUIRED_FIELDS = (
 )
 OPTIONAL_FIELDS = ("note",)
 ALL_FIELDS = REQUIRED_FIELDS + OPTIONAL_FIELDS
+
+JUDGE_PROMPT_PIN_FIELDS = ("source", "symbol", "sha256", "evidence")
 
 _DECISION_ID_RE = re.compile(r"^D-\d{4}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -221,6 +271,48 @@ def section_sha256(text, decision_id):
     if status != "ok":
         return None, status
     digest = hashlib.sha256(section_text.encode("utf-8")).hexdigest()
+    return digest, "ok"
+
+
+def extract_judge_prompt(text, symbol):
+    """Return (prompt_text, status) where status is one of: "ok",
+    "not_found", "duplicate", "not_a_string", "syntax_error".
+    prompt_text is None unless status=="ok". See module docstring
+    "JUDGE PROMPT PIN" for the full extraction contract.
+    """
+    normalized = _normalize_newlines(text)
+    try:
+        tree = ast.parse(normalized)
+    except SyntaxError:
+        return None, "syntax_error"
+
+    matches = []
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == symbol:
+                    matches.append(node.value)
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            if isinstance(node.target, ast.Name) and node.target.id == symbol:
+                matches.append(node.value)
+
+    if not matches:
+        return None, "not_found"
+    if len(matches) > 1:
+        return None, "duplicate"
+
+    value_node = matches[0]
+    if isinstance(value_node, ast.Constant) and isinstance(value_node.value, str):
+        return value_node.value, "ok"
+    return None, "not_a_string"
+
+
+def judge_prompt_sha256(text, symbol):
+    """Return (digest_hex, status); digest_hex is None unless status=="ok"."""
+    prompt_text, status = extract_judge_prompt(text, symbol)
+    if status != "ok":
+        return None, status
+    digest = hashlib.sha256(prompt_text.encode("utf-8")).hexdigest()
     return digest, "ok"
 
 
@@ -379,6 +471,87 @@ def check_entry_legs(entry, repo_root):
     return errors
 
 
+def check_judge_prompt_pin(root, repo_root):
+    """Validate the top-level "judge_prompt_pin" section. Returns a
+    list of ASCII violation strings; empty means the pin holds. The
+    section's ABSENCE is itself a violation once this mechanism exists
+    -- there is no silent pass for "no pin configured" (see module
+    docstring "JUDGE PROMPT PIN").
+    """
+    errors = []
+    if not isinstance(root, dict) or "judge_prompt_pin" not in root:
+        errors.append("missing required section: judge_prompt_pin")
+        return errors
+
+    pin = root["judge_prompt_pin"]
+    if not isinstance(pin, dict):
+        errors.append(
+            "section 'judge_prompt_pin' is not an object (type: %s)"
+            % type(pin).__name__
+        )
+        return errors
+
+    for field in JUDGE_PROMPT_PIN_FIELDS:
+        if field not in pin:
+            errors.append("judge_prompt_pin: missing required field: %s" % field)
+    if errors:
+        return errors
+
+    def _is_nonempty_str(v):
+        return isinstance(v, str) and len(v) > 0
+
+    if not _is_nonempty_str(pin.get("source")):
+        errors.append("judge_prompt_pin: field 'source' must be a non-empty string")
+    if not _is_nonempty_str(pin.get("symbol")):
+        errors.append("judge_prompt_pin: field 'symbol' must be a non-empty string")
+    if not _is_nonempty_str(pin.get("evidence")):
+        errors.append("judge_prompt_pin: field 'evidence' must be a non-empty string")
+    sh = pin.get("sha256")
+    if not isinstance(sh, str) or not _SHA256_RE.match(sh):
+        errors.append(
+            "judge_prompt_pin: field 'sha256' must be 64 lowercase hex characters"
+        )
+    if errors:
+        return errors
+
+    source_rel = pin["source"]
+    symbol = pin["symbol"]
+    source_path = os.path.join(repo_root, source_rel)
+    source_text, err = read_text_file(source_path)
+    if source_text is None:
+        errors.append("judge_prompt_pin: source leg failed: %s" % err)
+        return errors
+
+    digest, status = judge_prompt_sha256(source_text, symbol)
+    if status == "not_found":
+        errors.append(
+            "judge_prompt_pin: symbol %s not found in %s"
+            % (_ascii_safe(symbol), _ascii_safe(source_rel))
+        )
+    elif status == "duplicate":
+        errors.append(
+            "judge_prompt_pin: symbol %s assigned more than once in %s"
+            % (_ascii_safe(symbol), _ascii_safe(source_rel))
+        )
+    elif status == "not_a_string":
+        errors.append(
+            "judge_prompt_pin: symbol %s in %s is not a string literal"
+            % (_ascii_safe(symbol), _ascii_safe(source_rel))
+        )
+    elif status == "syntax_error":
+        errors.append(
+            "judge_prompt_pin: source file %s has a syntax error"
+            % _ascii_safe(source_rel)
+        )
+    elif digest != pin["sha256"]:
+        errors.append(
+            "JUDGE_SYSTEM_PROMPT drifted from pinned hash - prompt change "
+            "requires re-calibration and pin update in the same commit"
+        )
+
+    return errors
+
+
 def run_validate(allowlist_path, repo_root):
     """Return (ok, errors, entry_count)."""
     text, err = read_text_file(allowlist_path)
@@ -391,10 +564,16 @@ def run_validate(allowlist_path, repo_root):
         return False, ["allowlist: invalid JSON: %s" % _ascii_safe(str(exc))], 0
 
     root_errors, entries = validate_root(root)
-    if entries is None:
-        return False, ["allowlist: %s" % e for e in root_errors], 0
 
     all_errors = ["allowlist: %s" % e for e in root_errors]
+
+    if isinstance(root, dict):
+        all_errors.extend(
+            "allowlist: %s" % e for e in check_judge_prompt_pin(root, repo_root)
+        )
+
+    if entries is None:
+        return False, all_errors, 0
 
     valid_entries = []
     seen_ids = []
@@ -453,10 +632,44 @@ def main(argv):
         sys.stdout.write("%s\n" % digest)
         return 0
 
+    if len(args) == 1 and args[0] == "--hash-judge-prompt":
+        text, err = read_text_file(DEFAULT_JUDGE_PROMPT_SOURCE_ABS)
+        if text is None:
+            sys.stderr.write("JUDGE PROMPT HASH FAILED: %s\n" % err)
+            return 1
+        digest, status = judge_prompt_sha256(text, DEFAULT_JUDGE_PROMPT_SYMBOL)
+        if status == "not_found":
+            sys.stderr.write(
+                "JUDGE PROMPT HASH FAILED: symbol %s not found in %s\n"
+                % (DEFAULT_JUDGE_PROMPT_SYMBOL, DEFAULT_JUDGE_PROMPT_SOURCE_REL)
+            )
+            return 1
+        if status == "duplicate":
+            sys.stderr.write(
+                "JUDGE PROMPT HASH FAILED: symbol %s assigned more than once in %s\n"
+                % (DEFAULT_JUDGE_PROMPT_SYMBOL, DEFAULT_JUDGE_PROMPT_SOURCE_REL)
+            )
+            return 1
+        if status == "not_a_string":
+            sys.stderr.write(
+                "JUDGE PROMPT HASH FAILED: symbol %s in %s is not a string literal\n"
+                % (DEFAULT_JUDGE_PROMPT_SYMBOL, DEFAULT_JUDGE_PROMPT_SOURCE_REL)
+            )
+            return 1
+        if status == "syntax_error":
+            sys.stderr.write(
+                "JUDGE PROMPT HASH FAILED: %s has a syntax error\n"
+                % DEFAULT_JUDGE_PROMPT_SOURCE_REL
+            )
+            return 1
+        sys.stdout.write("%s\n" % digest)
+        return 0
+
     sys.stderr.write(
-        "usage: escape_check.py [--hash D-XXXX]\n"
-        "  (no args)   validate tools/escape_allowlist.json against the live tree\n"
-        "  --hash ID   print sha256 of decision section ID in this repo's decision log\n"
+        "usage: escape_check.py [--hash D-XXXX | --hash-judge-prompt]\n"
+        "  (no args)          validate tools/escape_allowlist.json against the live tree\n"
+        "  --hash ID          print sha256 of decision section ID in this repo's decision log\n"
+        "  --hash-judge-prompt  print sha256 of JUDGE_SYSTEM_PROMPT in gateway/shadow_eval.py\n"
     )
     return 2
 

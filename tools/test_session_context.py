@@ -10,6 +10,7 @@ import datetime
 import importlib
 import json
 import sqlite3
+import subprocess
 import sys
 from pathlib import Path
 
@@ -133,6 +134,118 @@ def test_last_event_line_reports_tail():
 
 def test_last_event_line_empty_journal():
     assert "empty or missing" in last_event_line([])
+
+
+# ---- ported from HQ 2026-07-23 (staff VG-1 part B): CLOCK DRIFT line ----
+# Field precedent: a session's journal tail carried a ts LATER than the
+# system clock (a previous environment's clock ran ahead). Threshold:
+# > 60s. Battery per CLAUDE.md R11: acceptance keys (fires when ahead,
+# silent when not) + the boundary itself (60s exactly vs 61s) +
+# adversarial fail-open inputs.
+
+
+def test_clock_drift_line_absent_when_journal_ts_behind_system_clock():
+    events = [_event("delegated", ts="2026-07-10T08:00:00")]
+    now = datetime.datetime(2026, 7, 10, 9, 0, 0)
+    assert sc.clock_drift_line(events, now) == ""
+
+
+def test_clock_drift_line_at_threshold_boundary_is_silent():
+    # Exactly 60s ahead -- the threshold is "> 60s" -- AT the boundary
+    # must NOT fire.
+    now = datetime.datetime(2026, 7, 10, 8, 0, 0)
+    events = [_event("delegated", ts="2026-07-10T08:01:00")]  # +60s
+    assert sc.clock_drift_line(events, now) == ""
+
+
+def test_clock_drift_line_one_second_past_threshold_fires():
+    now = datetime.datetime(2026, 7, 10, 8, 0, 0)
+    events = [_event("delegated", ts="2026-07-10T08:01:01")]  # +61s
+    line = sc.clock_drift_line(events, now)
+    assert line.startswith("CLOCK DRIFT: last journal ts is ")
+    assert "min ahead of system clock" in line
+    assert "D-0089" in line
+    assert "non-monotonic" in line
+    assert line.isascii()
+
+
+def test_clock_drift_line_reports_minutes_ahead():
+    now = datetime.datetime(2026, 7, 23, 19, 45, 56)
+    events = [_event("delegated", ts="2026-07-23T20:16:32")]
+    line = sc.clock_drift_line(events, now)
+    assert "CLOCK DRIFT: last journal ts is 31 min ahead of system clock" in line
+
+
+def test_clock_drift_line_empty_journal_is_silent():
+    now = datetime.datetime(2026, 7, 10, 8, 0, 0)
+    assert sc.clock_drift_line([], now) == ""
+
+
+def test_clock_drift_line_missing_ts_field_is_silent():
+    now = datetime.datetime(2026, 7, 10, 8, 0, 0)
+    events = [{"event": "delegated"}]  # no 'ts' key at all
+    assert sc.clock_drift_line(events, now) == ""
+
+
+def test_clock_drift_line_malformed_non_iso_ts_is_silent():
+    now = datetime.datetime(2026, 7, 10, 8, 0, 0)
+    events = [_event("delegated", ts="not-a-timestamp-at-all")]
+    assert sc.clock_drift_line(events, now) == ""
+
+
+def test_clock_drift_line_non_string_ts_is_silent():
+    # Adversarial: a malformed journal line where ts ended up a number
+    # (not the contractual string) must not crash with an AttributeError
+    # from parse_ts()'s own .strip() call.
+    now = datetime.datetime(2026, 7, 10, 8, 0, 0)
+    events = [{"event": "delegated", "ts": 12345}]
+    assert sc.clock_drift_line(events, now) == ""
+
+
+def test_build_context_lines_includes_clock_drift_when_present(tmp_path):
+    events = [_event("delegated", ts="2026-07-10T09:05:00", task_id="t-001")]
+    root = _seed_repo(tmp_path, events=events)
+    now = datetime.datetime(2026, 7, 10, 9, 0, 0)  # journal ts is +5min ahead
+    lines = sc.build_context_lines(root, now)
+    assert any(l.startswith("CLOCK DRIFT:") for l in lines), lines
+
+
+def test_build_context_lines_omits_clock_drift_when_absent(tmp_path):
+    events = [_event("delegated", ts="2026-07-10T08:00:00", task_id="t-001")]
+    root = _seed_repo(tmp_path, events=events)
+    now = datetime.datetime(2026, 7, 10, 9, 0, 0)  # journal ts is BEHIND now
+    lines = sc.build_context_lines(root, now)
+    assert not any(l.startswith("CLOCK DRIFT:") for l in lines), lines
+
+
+def test_main_survives_malformed_tail_ts_no_clock_drift_crash(tmp_path, capsys):
+    root = tmp_path
+    (root / "logs").mkdir()
+    # No routing-log.jsonl file at all.
+    (root / "gateway").mkdir()
+    with open(root / "gateway" / "config.yaml", "w", encoding="utf-8") as f:
+        yaml.safe_dump(CONFIG, f)
+    with open(root / "gateway" / "budgets.yaml", "w", encoding="utf-8") as f:
+        yaml.safe_dump(BUDGETS, f)
+    conn = sqlite3.connect(root / "gateway" / "requests.db")
+    conn.execute(REQUESTS_SCHEMA)
+    conn.commit()
+    conn.close()
+    code = sc.main(root)
+    assert code == 0
+    out = capsys.readouterr().out.strip().splitlines()
+    assert not any(l.startswith("session-context warning:") for l in out)
+    assert not any(l.startswith("CLOCK DRIFT:") for l in out)
+
+
+def test_main_survives_broken_tail_ts_no_clock_drift_crash(tmp_path, capsys):
+    events = [_event("delegated", ts="garbage-not-a-timestamp", task_id="t-001")]
+    root = _seed_repo(tmp_path, events=events)
+    code = sc.main(root)
+    assert code == 0
+    out = capsys.readouterr().out.strip().splitlines()
+    assert not any(l.startswith("session-context warning:") for l in out)
+    assert not any(l.startswith("CLOCK DRIFT:") for l in out)
 
 
 # ---- degradation window: open vs closed ----
@@ -1120,3 +1233,162 @@ def test_open_dispatches_non_string_notes_does_not_raise():
     opens = sc.open_dispatches(events)
     assert len(opens) == 1
     assert opens[0]["task_id"] == "t-001"
+
+
+# ---------------------------------------------------------------------
+# Ported from HQ 2026-07-23 (staff VG-1 part A): hooks_path_autofix_line
+# ---------------------------------------------------------------------
+# Scoped port: the kit's session_context.py carries the AUTOFIX action
+# itself (this section), not the staff's full git_hooks_channel report
+# (required-file/exec-bit WARNINGs on an already-set hooksPath are
+# tools/wiring_check.py's job -- see that module's own test suite,
+# test_wiring_check.py, and session_context.py's module docstring for
+# the division of labor).
+
+
+def _git(args, cwd):
+    return subprocess.run(
+        ["git", *args], cwd=str(cwd), capture_output=True, text=True, timeout=10
+    )
+
+
+def _init_repo_with_hooks(tmp_path, hookspath="own"):
+    """Minimal git repo with a working .githooks/ (pre-commit +
+    commit-msg present, tracked, executable in the index) and
+    core.hooksPath pointed at it unless hookspath overrides that
+    (None = leave unset; a Path = point hooksPath there instead)."""
+    _git(["init", "-q"], tmp_path)
+    githooks = tmp_path / ".githooks"
+    githooks.mkdir()
+    (githooks / "pre-commit").write_text("#!/bin/sh\n", encoding="utf-8")
+    (githooks / "commit-msg").write_text("#!/bin/sh\n", encoding="utf-8")
+    _git(["add", ".githooks/pre-commit", ".githooks/commit-msg"], tmp_path)
+    _git(["update-index", "--chmod=+x", ".githooks/pre-commit"], tmp_path)
+    _git(["update-index", "--chmod=+x", ".githooks/commit-msg"], tmp_path)
+    if hookspath == "own":
+        _git(["config", "core.hooksPath", str(githooks)], tmp_path)
+    elif hookspath is None:
+        pass  # leave unset
+    else:
+        _git(["config", "core.hooksPath", str(hookspath)], tmp_path)
+    return tmp_path
+
+
+def test_hooks_path_autofix_line_unset_autofixes(tmp_path):
+    _init_repo_with_hooks(tmp_path, hookspath=None)
+    line = sc.hooks_path_autofix_line(tmp_path)
+    assert line == "WIRING AUTOFIX: core.hooksPath set to .githooks"
+    # The fix actually stuck in the repo's own local config, not just
+    # claimed in the returned line.
+    result = _git(["config", "core.hooksPath"], tmp_path)
+    assert result.stdout.strip() == ".githooks"
+
+
+def test_hooks_path_autofix_line_write_failure_degrades_to_warning(tmp_path, monkeypatch):
+    # The WRITE call is made to fail while the READ call (which reports
+    # unset) is untouched -- must fall back to a WARNING with the
+    # failure reason appended, not raise and not silently print AUTOFIX.
+    _init_repo_with_hooks(tmp_path, hookspath=None)
+    real_run = sc.subprocess.run
+
+    def _failing_write(cmd, *args, **kwargs):
+        if len(cmd) >= 3 and cmd[0] == "git" and cmd[1] == "config" and "--local" in cmd:
+            raise OSError("simulated: git config write failed")
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(sc.subprocess, "run", _failing_write)
+    line = sc.hooks_path_autofix_line(tmp_path)
+    assert "core.hooksPath not set" in line and "autofix failed" in line
+    assert not line.startswith("WIRING AUTOFIX:")
+    assert line.startswith("WIRING WARNING:")
+    # The real config must be untouched (still unset).
+    result = _git(["config", "core.hooksPath"], tmp_path)
+    assert result.returncode != 0 or not result.stdout.strip()
+
+
+def test_hooks_path_autofix_line_reports_failure_when_hook_files_missing(tmp_path):
+    # The `git config` write itself succeeds, but the recheck must
+    # catch that the required hook files are still missing -- reported
+    # as a failed autofix, not a false AUTOFIX line.
+    _git(["init", "-q"], tmp_path)
+    (tmp_path / ".githooks").mkdir()
+    # Deliberately do NOT create pre-commit/commit-msg under .githooks.
+    line = sc.hooks_path_autofix_line(tmp_path)
+    assert "core.hooksPath not set" in line and "autofix" in line and "missing" in line
+    assert not line.startswith("WIRING AUTOFIX:")
+    result = _git(["config", "core.hooksPath"], tmp_path)
+    assert result.stdout.strip() == ".githooks"
+
+
+def test_hooks_path_autofix_line_already_set_returns_empty(tmp_path):
+    # Already set to the CORRECT value -- nothing to fix, no line at all
+    # (the broader "already set" report, correct or not, is
+    # wiring_summary_line()'s/tools/wiring_check.py's job, not this
+    # function's -- see module docstring).
+    _init_repo_with_hooks(tmp_path)
+    assert sc.hooks_path_autofix_line(tmp_path) == ""
+
+
+def test_hooks_path_autofix_line_already_set_elsewhere_returns_empty():
+    # Set to some OTHER path -- deliberately NOT autofixed (an existing
+    # configuration, human or a prior session, is left alone) and
+    # deliberately NOT reported here either (wiring_check's job).
+    other = Path(__file__).resolve().parent
+    line = sc.hooks_path_autofix_line(other)
+    # Whatever this repo's own hooksPath is currently configured to,
+    # this function must never attempt to overwrite it nor emit a line
+    # about it -- confirmed by never raising and returning a string.
+    assert isinstance(line, str)
+
+
+def test_hooks_path_autofix_line_never_raises_when_git_missing(tmp_path, monkeypatch):
+    def _boom(*args, **kwargs):
+        raise FileNotFoundError("git not found")
+
+    monkeypatch.setattr(sc.subprocess, "run", _boom)
+    assert sc.hooks_path_autofix_line(tmp_path) == ""
+
+
+# ---------------------------------------------------------------------
+# wiring_summary_line -- mirrors the staff channel via tools/wiring_check.py
+# ---------------------------------------------------------------------
+
+
+def test_wiring_summary_line_ok_on_fully_wired_repo(tmp_path):
+    _init_repo_with_hooks(tmp_path)
+    claude_dir = tmp_path / ".claude"
+    claude_dir.mkdir()
+    (claude_dir / "settings.json").write_text(
+        json.dumps({"hooks": {}}), encoding="utf-8"
+    )
+    assert sc.wiring_summary_line(tmp_path) == "WIRING: OK"
+
+
+def test_wiring_summary_line_reports_issue_count(tmp_path):
+    # Nothing configured at all -- hooksPath unset (and, in a bare repo
+    # with no writable-looking setup here, autofix may or may not stick,
+    # but the settings.json is definitely missing) -- at least one issue.
+    _git(["init", "-q"], tmp_path)
+    line = sc.wiring_summary_line(tmp_path)
+    assert line.startswith("WIRING: ")
+    assert line != "WIRING: OK"
+    assert "run tools/wiring_check.py --check" in line
+
+
+def test_wiring_summary_line_never_raises_when_wiring_check_broken(tmp_path, monkeypatch):
+    import wiring_check
+
+    def _boom(root=None):
+        raise RuntimeError("simulated wiring_check failure")
+
+    monkeypatch.setattr(wiring_check, "check_wiring", _boom)
+    line = sc.wiring_summary_line(tmp_path)
+    assert line.startswith("WIRING: check unavailable (")
+
+
+def test_build_context_lines_includes_wiring_summary(tmp_path):
+    events = [_event("delegated", ts="2026-07-10T08:00:00", task_id="t-001")]
+    root = _seed_repo(tmp_path, events=events)
+    lines = sc.build_context_lines(root)
+    assert any(l.startswith("WIRING:") or l.startswith("WIRING WARNING:")
+               or l.startswith("WIRING AUTOFIX:") for l in lines), lines

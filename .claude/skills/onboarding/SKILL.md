@@ -128,6 +128,21 @@ CLAUDE.md wins and that's a bug report against this file.
    expect to bind isn't there, that's a question back to the
    operator/Lead, not something to invent.
 
+   `designer` is NOT its own row in `delegation.config.yaml` (a
+   recorded decision — never add one). Instead, THIS SAME STEP is the
+   executor of its auto-binding: right after the `critic` row above is
+   walked and its model confirmed, this step writes that SAME
+   confirmed model into the `model:` frontmatter field of
+   `.claude/agents/designer.md` — no separate question to the
+   operator, no separate config row. If that model is BELOW the
+   critic tier (a degraded or non-default binding), warn verbatim:
+   "designer is a load-bearing role (it drafts specs); binding a model
+   below the critic tier here is not recommended" — then continue
+   ONLY on the operator's explicit word, with the decision recorded as
+   its own `DECISIONS.md` line in step 5's format below. A model bound
+   ABOVE the critic tier needs no warning (the rule is
+   one-directional).
+
 5. **Exams.** `delegation.config.yaml`'s `exam` block marks this
    mandatory, with failure overridable by explicit operator word.
 
@@ -165,6 +180,24 @@ CLAUDE.md wins and that's a bug report against this file.
    exam's PASS, and the keep-or-replace decision below uses the last
    unconditioned score.
 
+   **D-0085 reference ladder** (baseline for "no worse than the
+   mirror"): the exam score of the model bound to a host function is
+   compared against this function's reference bar, not judged in
+   isolation. Bindings and prices, taken from D-0085 (the reference
+   deployment's evidence line — do not invent numbers for a different
+   host binding):
+   - scout = Haiku 4.5 ($1 / $5 per MTok)
+   - builder = Sonnet ($3 / $15 per MTok)
+   - critic = Opus 4.8 ($5 / $25 per MTok)
+   - Lead = Fable ($10 / $50 per MTok)
+   - judge = `judge-sonnet` (calibration bar: 13/13 agreement,
+     `PROCESS/JUDGE_CALIBRATION_PROTOCOL.md`)
+
+   Record the comparison as a row in the Adoption Ledger (the
+   function, the host's bound model, the reference bar above, and
+   whether the exam met it) — not just a pass/fail note in the Runs
+   log.
+
    Run the exam defined for each role below; roles listed without one
    state the reason:
    - **scout**: first run the `scout-exam-gen` skill (it writes a
@@ -178,6 +211,22 @@ CLAUDE.md wins and that's a bug report against this file.
      witness rule, CLAUDE.md rule 2) — a real verification run against
      that task's own spec, which is a stronger check than any one-time
      golden set.
+   - **designer**: no entrance exam, by design (its output always
+     passes Lead acceptance before any dispatch uses it). If the model
+     bound to `designer` is the SAME model that already sat the critic
+     exam (see step 4: designer auto-binds to the critic model), no
+     additional run is needed — that criterion is already measured.
+     ELSE (the model bound to designer never sat the critic exam —
+     e.g. a below-tier override kept in step 4, or any other model
+     that ended up bound without a matching critic-exam run): record
+     an honest ledger/`DECISIONS.md` line instead of a silent gap —
+     "designer bound to `<model>` without exam coverage — no designer
+     set by design, every draft passes Lead acceptance before use"
+     (that Lead-acceptance gate IS the control here, per the operator's
+     own decision). Per that same decision, a WARNING fires only when
+     the bound model is BELOW the critic tier (step 4's own warning);
+     a model bound ABOVE or AT an equal-but-different tier gets no
+     warning, but still gets this same honest no-exam-coverage line.
    - **critic**: first run the `critic-exam-gen` skill (it writes a
      seeded-diff exam tailored to this repo at `PROCESS/CRITIC_EXAM.md`
      — see that skill for the method), then dispatch the resulting
@@ -296,7 +345,9 @@ is the REVISION DELTA, never the full kit:
    silence is not a decision. An ADOPTED role-file content edit
    passes the host's own exam gate for that role BEFORE the commit
    (critic — seeded-diff exam; scout — golden set run; builder —
-   witness-based acceptance by recorded kit decision).
+   witness-based acceptance by recorded kit decision; designer — no
+   set, Lead-acceptance-gated (inherits the critic exam when the model
+   is the same)).
 4. Update the ledger's recorded kit revision in the same move. The
    cost is bounded by the delta and paid by the host (Rule #1); a
    full re-scan is the fallback only when no revision was recorded.

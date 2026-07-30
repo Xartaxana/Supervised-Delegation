@@ -50,6 +50,9 @@ model_list:
   # function/grade split). api-keys-only in delegation.config.yaml;
   # calibrate it against judge_calibration.json before trusting it
   # (see gateway/README.md "Shadow Evaluation").
+  # Sonnet-class judge aliases need `drop_params: true` (Sonnet rejects
+  # temperature=0) -- add it under litellm_params if {{JUDGE_MODEL}}
+  # resolves to a Sonnet-family model.
   - model_name: judge
     litellm_params:
       model: {{JUDGE_PROVIDER}}/{{JUDGE_MODEL}}

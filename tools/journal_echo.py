@@ -141,17 +141,86 @@ the substring check): every run of whitespace collapsed to one space
 plus a strip -- so a witness text reflowed/wrapped differently from
 the exact command still matches.
 
-Ceiling: at most MAX_WITNESS_LINES=5 visible (warn_soft/warn_loud)
-lines per hook call, "+K more" on top -- the same independent-axis
-ceiling pattern as MAX_TIER_LINES, guarding the same head_text=None
-("new_lines = the whole file") scenario. The track is read lazily and
-at most ONCE per hook call (session_id is shared by every line in one
-PostToolUse event).
+Ceiling: at most MAX_WITNESS_LINES=5 visible (warn_soft/warn_loud/
+warn_stale) lines per hook call, "+K more" on top -- the same
+independent-axis ceiling pattern as MAX_TIER_LINES, guarding the same
+head_text=None ("new_lines = the whole file") scenario. The track is
+read lazily and at most ONCE per hook call (session_id is shared by
+every line in one PostToolUse event).
 
 This extension shares main()'s outer try/except AND has its own local
 try/except around the collection call, so a failure inside the
 witness cross-check can never take down TIER ECHO or the form-defect
 check running alongside it in the same call.
+
+WITNESS ECHO STALENESS (ported from HQ, this batch): a SECOND,
+INDEPENDENT axis on top of the outcome lattice above -- a witness can
+honestly cite a command whose LATEST run was green (outcome 5, silent
+on that axis) and the session's track can STILL carry a code edit
+LATER than that green run with no re-run since -- the same invariant
+tools/dod_gate.py.evaluate() already enforces at SubagentStop ("the
+last edit is before the last green run"), checked again here, at
+write time, over the WHOLE session track (any agent_id, not just the
+one filed on this journal line). Trigger: the track carries at least
+one non-doc-only edit (`.claude/dod_track/<session_id>.json`'s "edits"
+list, read the same lazy-once-per-call way as "runs") AND either no
+green run exists at all, or the latest edit's ts is strictly later
+than the latest green run's ts -- ("warn_stale", line_no, last_edit_ts,
+last_green_ts_or_None), independent of (and additional to) whichever
+of outcomes 3/4/5 above the SAME line also produced: a line can be
+BOTH "matched, latest green" (silent on the command-match axis) AND
+"warn_stale" (loud on the staleness axis) at the same time.
+
+Doc-only edits (.md/.json/.jsonl, plus .gitignore/.gitattributes/
+.editorconfig -- the SAME extension list tools/dod_gate.py's own
+doc-only exemption uses, mirrored here as a local copy, not imported)
+are EXCLUDED from "last edit" -- without this exemption, the Edit/
+Write call that writes THIS accepted line into routing-log.jsonl
+(itself a .jsonl file) would make itself its own "latest edit",
+falsely staling every batched accepted line. An edit record with no
+file_path (an old track, or a payload missing the field) is
+conservatively treated as NOT doc-only (counted toward "last edit") --
+missing information does not earn an exemption, the same fail-safe
+default this whole file already applies elsewhere.
+
+TS DRIFT ECHO at write time (ported from HQ, this batch): the third
+independent echo layer, closing a gap discipline alone was carrying
+(F-29): "ts is read from the system clock immediately before writing,
+never narrated" is checked at COMMIT time by journal_validator (a
+monotonicity + "not more than 10 minutes in the future" rule), but by
+commit time an event is already legitimately old (D-0079 batch
+cadence: events accumulate in session memory and are written to disk
+in one block at the end of a stage, the commit can follow hours
+later) -- drift-from-the-clock-right-now is not meaningfully
+checkable at commit time at all. The one moment where "is this ts
+fresh against the clock RIGHT NOW" is meaningful is the moment the
+line lands on disk -- this hook's own invocation -- so this check
+lives HERE, not in journal_validator. Two independent thresholds (own
+engineering decision, same class as MAX_TIER_LINES/MAX_WITNESS_LINES):
+TS_FUTURE_TOLERANCE_SECONDS=120 (2 minutes -- headroom for ordinary
+process jitter between reading the clock and this hook actually
+running, well under journal_validator's own 10-minute hard limit, so
+this layer warns EARLIER and on SMALLER drift than the hard gate) and
+TS_STALE_TOLERANCE_SECONDS=1800 (30 minutes -- headroom for a
+LEGITIMATE batch: the ts is read once "immediately before writing the
+BATCH", and the batch itself may have sat in session memory for a
+while before the actual disk write; half an hour is the rough order
+of magnitude of one work stage -- a drift LARGER than that suggests
+the ts was not, in fact, read from the clock right before writing,
+which is worth flagging even under batch discipline). Both thresholds
+are strict (`>`, not `>=`) -- exactly at the boundary stays silent.
+Ceiling: MAX_TS_DRIFT_LINES=5 lines per hook call, "+K more" on top --
+the same class of ceiling as MAX_TIER_LINES/MAX_WITNESS_LINES, guarding
+the same head_text=None ("new_lines = the whole file") scenario;
+without it, one missed git init on a repo with a journal already
+hundreds of lines long would blow additionalContext up to hundreds of
+TS DRIFT lines in one call. Warn-only, always visible (no silent
+"note" branch, unlike WITNESS ECHO).
+
+Both new layers share the payload-scoped echo base with TIER ECHO/
+WITNESS ECHO (see "PAYLOAD-SCOPED ECHO BASE" below) -- a line already
+evaluated by an earlier hook call is never re-evaluated by a later
+one, for staleness OR for ts drift.
 """
 
 import datetime
@@ -205,6 +274,148 @@ MAX_WITNESS_LINES = 5
 # outcome lattice.
 NOTE_RETRO = "retro accepted - track incomparable"
 NOTE_TRACK_EMPTY = "track empty/unreadable - witness incomparable"
+
+# --- WITNESS ECHO STALENESS (ported from HQ, this batch) ---------------
+# Mirror of tools/dod_gate.py.DOC_ONLY_EXTENSIONS/DOC_ONLY_DOTFILES --
+# the SAME list, a LOCAL copy (not an import -- dod_gate.py stays
+# outside this hook's self-containment boundary, the same principle the
+# module docstring already applies to _raw_sanitize/_ascii_sanitize).
+# A divergence between this list and dod_gate.py's own is its own class
+# of pair defect (fix the class, not the instance) -- editing either
+# list edits both in the same move.
+DOC_ONLY_EXTENSIONS = {".md", ".json", ".jsonl"}
+DOC_ONLY_DOTFILES = {".gitignore", ".gitattributes", ".editorconfig"}
+
+
+def _is_doc_only_edit_path(file_path) -> bool:
+    """Mirror of tools/dod_gate.py._is_doc_only_file -- the same logic:
+    an unknown/empty/non-string file_path -> False (conservatively NOT
+    doc-only -- missing information does not earn an exemption from
+    "code edit", the same fail-safe principle dod_gate/dod_track
+    already apply for their own doc-only/scratchpad exemptions); a
+    dotfile in DOC_ONLY_DOTFILES -> True; otherwise the extension
+    (case-insensitive) in DOC_ONLY_EXTENSIONS. .jsonl is in this list --
+    covers BOTH logs/routing-log.jsonl itself (the very Edit/Write call
+    writing THIS accepted line would otherwise stale itself) and any
+    other .jsonl anywhere in the repo, with no separate, narrower
+    "journal-specific" criterion needed."""
+    if not isinstance(file_path, str) or not file_path:
+        return False
+    path = Path(file_path)
+    if path.name.lower() in DOC_ONLY_DOTFILES:
+        return True
+    return path.suffix.lower() in DOC_ONLY_EXTENSIONS
+
+
+# --- TS DRIFT ECHO at write time (ported from HQ, this batch) ----------
+# See the module docstring, "TS DRIFT ECHO at write time", for the full
+# motivation and threshold rationale.
+TS_FUTURE_TOLERANCE_SECONDS = 120
+TS_STALE_TOLERANCE_SECONDS = 1800
+# Ceiling on VISIBLE TS DRIFT ECHO lines per hook call -- symmetric with
+# MAX_TIER_LINES/MAX_WITNESS_LINES above (the same three-collector
+# class, the same head_text=None/new-lines-is-the-whole-file risk).
+MAX_TS_DRIFT_LINES = 5
+
+
+def _detect_ts_drift(ts, now: "datetime.datetime"):
+    """Returns ("future", delta_seconds) | ("stale", delta_seconds) |
+    None for one `ts` field value. Parsing is REUSED
+    (journal_validator.parse_ts), not duplicated -- the same
+    ISO-without-timezone format the validator already parses for its
+    own rule 10. An unparseable/missing ts -> None -- fail-open: ts
+    FORM is already caught separately as a form defect by
+    journal_validator/JOURNAL ECHO, this layer doesn't duplicate that
+    diagnosis.
+
+    `now` is the same naive local datetime.datetime.now() as the
+    journal's own ts convention (ISO, local time, no timezone) -- both
+    sides of the comparison are naive, an aware/naive conflict is not
+    possible.
+
+    Thresholds are strict (`>`), not (`>=`) -- exactly at the boundary
+    stays silent, symmetric for both future and stale."""
+    parsed = journal_validator.parse_ts(ts) if isinstance(ts, str) else None
+    if parsed is None:
+        return None
+    delta = (parsed - now).total_seconds()
+    if delta > TS_FUTURE_TOLERANCE_SECONDS:
+        return ("future", delta)
+    stale_delta = -delta
+    if stale_delta > TS_STALE_TOLERANCE_SECONDS:
+        return ("stale", stale_delta)
+    return None
+
+
+def _collect_ts_drift_events(new_lines: list, head_lines: list, now: "datetime.datetime") -> list:
+    """For EVERY new line (the same new_lines/head_lines TIER ECHO/
+    WITNESS ECHO already use) with a parseable `ts` field --
+    _detect_ts_drift. Per-line (not deduplicated by ts value -- several
+    lines of one batch sharing an identical ts each produce their OWN
+    independent result). Returns a list of (line_no, kind,
+    delta_seconds).
+
+    Fails open per line (the same pattern as _collect_tier_events/
+    _collect_witness_events): a broken line's JSON -- try/except with
+    `continue`, does not interrupt parsing the rest, does not crash the
+    hook."""
+    events = []
+    for idx, line in enumerate(new_lines):
+        line_no = len(head_lines) + idx + 1
+        try:
+            obj = json.loads(line)
+            if not isinstance(obj, dict):
+                continue
+            result = _detect_ts_drift(obj.get("ts"), now)
+            if result is None:
+                continue
+            kind, delta = result
+            events.append((line_no, kind, delta))
+        except Exception:
+            continue
+    return events
+
+
+def _format_ts_drift_line(event: tuple) -> str:
+    """Static ASCII literal + minimal dynamic content -- the same
+    principle _format_tier_line/_format_witness_line already apply in
+    this file. "line {N}" distinguishes several events of one batch
+    sharing an identical ts when joined with "; " -- the same local
+    pattern TIER ECHO/WITNESS ECHO already carry ("line N"). The only
+    dynamic content here is integers (line_no, rounded drift seconds) --
+    ASCII by construction, no sanitizer needed (unlike
+    _format_witness_line, which interpolates real third-party track
+    text)."""
+    line_no, kind, delta = event
+    seconds = int(round(abs(delta)))
+    if kind == "future":
+        return (f"TS DRIFT: line {line_no} event ts is {seconds}s in the FUTURE "
+                 "(F-29: ts must be read from the system clock immediately before writing)")
+    return (f"TS DRIFT: line {line_no} event ts is {seconds}s STALE "
+            "(D-0079: batch ts must still be read from the system clock right "
+            "before writing the batch, not carried over from an earlier check)")
+
+
+def build_ts_drift_segment(ts_drift_events: list, ascii_only: bool = False) -> str:
+    """Assembles the TS DRIFT part of additionalContext -- joined with
+    "; ", ceiling MAX_TS_DRIFT_LINES=5 lines per call with a "+K more"
+    tail on top (the same pattern as build_tier_segment/
+    build_witness_segment). ascii_only is accepted for signature
+    uniformity with the other build_* functions and combine_context, but
+    is actually a no-op here -- _format_ts_drift_line never inserts
+    anything but integers, so there is no non-ASCII content to sanitize
+    in either mode.
+
+    An empty ts_drift_events -> "" (the caller treats an empty string as
+    "no segment", same principle as the other build_* functions)."""
+    if not ts_drift_events:
+        return ""
+    head = ts_drift_events[:MAX_TS_DRIFT_LINES]
+    rest = len(ts_drift_events) - len(head)
+    body = "; ".join(_format_ts_drift_line(ev) for ev in head)
+    if rest > 0:
+        body += f"; +{rest} more"
+    return body
 
 
 def _raw_sanitize(s: str, max_len: int = MAX_MESSAGE_LEN) -> str:
@@ -469,31 +680,43 @@ def build_context(violations: list, ascii_only: bool = False) -> str:
 
 
 def combine_context(violations: list, tier_events: list, witness_events: list = None,
+                     ts_drift_events: list = None, escalation_events: list = None,
                      fallback_marker: str = "", ascii_only: bool = False) -> str:
     """One JSON additionalContext can carry form defects, TIER ECHO
-    lines, WITNESS ECHO lines, and (t-277/t-279, ported from HQ) a
-    fallback-base marker, joined by "; ". FOUR INDEPENDENT segments --
-    build_context(violations) (as a whole, its own "JOURNAL ECHO: N
-    defect(s)..." header unchanged), build_tier_segment(tier_events),
-    build_witness_segment(witness_events), and fallback_marker -- joined
-    with "; ", only when non-empty. Any subset empty -> the result is
-    just the remaining non-empty segments, the JSON is still printed as
-    long as at least one segment is non-empty. All empty -> "" -- the
-    caller (main()) treats an empty string as complete silence.
+    lines, WITNESS ECHO lines, TS DRIFT lines, ESCALATION lines (ported
+    from HQ, batch B6), and a fallback-base marker, joined by "; ". SIX
+    INDEPENDENT segments -- build_context(violations) (as a whole, its
+    own "JOURNAL ECHO: N defect(s)..." header unchanged),
+    build_tier_segment(tier_events), build_witness_segment(
+    witness_events), build_ts_drift_segment(ts_drift_events),
+    build_escalation_segment(escalation_events), and fallback_marker --
+    joined with "; ", only when non-empty. Any subset empty -> the
+    result is just the remaining non-empty segments, the JSON is still
+    printed as long as at least one segment is non-empty. All empty ->
+    "" -- the caller (main()) treats an empty string as complete
+    silence.
 
     fallback_marker -- a LITERAL (FALLBACK_MARKER_TEXT, see the
     "PAYLOAD-SCOPED ECHO BASE" section below), never sanitized (a
     static ASCII string, never third-party text -- same principle as
     build_context's static prefix). main() passes it as an empty
-    string whenever TIER ECHO/WITNESS ECHO did NOT degrade to the
-    HEAD-diff fallback on this particular hook call (see
-    _resolve_echo_base) -- so its absence in the old 2-/3-positional
+    string whenever TIER ECHO/WITNESS ECHO/TS DRIFT/ESCALATION did NOT
+    degrade to the HEAD-diff fallback on this particular hook call (see
+    _resolve_echo_base) -- so its absence in the old 2-/3-/4-positional
     call forms changes nothing.
 
-    witness_events=None (default, NOT []) preserves the old 2-positional
-    call form combine_context(violations, tier_events) byte-for-byte:
-    a None witness_events segment is "" exactly like an empty list, so
-    every existing call/test using the short form is unaffected.
+    witness_events=None / ts_drift_events=None / escalation_events=None
+    (default, NOT []) preserve every older call form (combine_context(
+    violations, tier_events) through the 4-positional combine_context(
+    violations, tier_events, witness_events, ts_drift_events))
+    byte-for-byte: a None segment is "" exactly like an empty list, so
+    every existing call/test using a shorter form is unaffected.
+    escalation_events is added as a NEW 5th positional parameter
+    (BEFORE fallback_marker, which shifts to 6th place) -- no existing
+    call site in this repo passes fallback_marker positionally (only
+    2-4 positional arguments, or a keyword call -- grepped across every
+    test_journal_echo*.py before this edit), so the shift breaks
+    nothing except main() below, which this same task updates.
     fallback_marker="" (default) is the same story -- it never adds a
     segment unless explicitly passed."""
     parts = []
@@ -505,6 +728,12 @@ def combine_context(violations: list, tier_events: list, witness_events: list = 
     witness_segment = build_witness_segment(witness_events or [], ascii_only)
     if witness_segment:
         parts.append(witness_segment)
+    ts_drift_segment = build_ts_drift_segment(ts_drift_events or [], ascii_only)
+    if ts_drift_segment:
+        parts.append(ts_drift_segment)
+    escalation_segment = build_escalation_segment(escalation_events or [], ascii_only)
+    if escalation_segment:
+        parts.append(escalation_segment)
     if fallback_marker:
         parts.append(fallback_marker)
     return "; ".join(parts)
@@ -642,6 +871,120 @@ def _load_witness_runs(cwd, session_id):
         return None
 
 
+def _load_witness_edits(cwd, session_id):
+    """Reads the current session's track "edits" list (WITNESS ECHO
+    STALENESS, ported from HQ) -- structurally mirrors
+    _load_witness_runs above (its OWN independent disk read, not a
+    shared internal helper with it -- the same hook self-containment
+    preference the module docstring already explains for the local
+    _raw_sanitize/_ascii_sanitize copies: every track reader in this
+    file is self-sufficient about reading, the only thing they share is
+    the path formula, _witness_track_path). Returns a list (possibly
+    empty) on a successful read; None on ANY failure (the same full set
+    of failure modes as _load_witness_runs). The caller (_detect_staleness)
+    treats both None and [] the same way: "no edits in the track to
+    compare against"."""
+    if not isinstance(session_id, str) or not session_id:
+        return None
+    path = _witness_track_path(cwd, session_id)
+    try:
+        if not path.exists():
+            return None
+        text = path.read_text(encoding="utf-8", errors="replace")
+        if not text.strip():
+            return None
+        data = json.loads(text)
+        if not isinstance(data, dict):
+            return None
+        edits = data.get("edits")
+        if not isinstance(edits, list):
+            return None
+        return edits
+    except Exception:
+        return None
+
+
+def _last_edit_ts(edits: list):
+    """The max ts among edits-records counted as a "code edit" (WITNESS
+    ECHO STALENESS) -- the same lexicographic-==-chronological
+    convention _last_by_ts already applies to runs (dod_track's ts
+    values are fixed-width ISO with microseconds).
+
+    Records whose file_path is doc-only (_is_doc_only_edit_path -- the
+    mirror of tools/dod_gate.py._is_doc_only_file, the same extension
+    list) are EXCLUDED from the max -- without this filter, the very
+    Edit/Write call writing THIS accepted line into routing-log.jsonl
+    (itself a .jsonl file, hence doc-only) would make itself the
+    "latest edit", falsely staling every batched accepted line. A
+    record with no file_path (None/non-string -- an old track, or a
+    payload missing the field) is CONSERVATIVELY treated as NOT
+    doc-only (_is_doc_only_edit_path(None) == False) -- counted as a
+    code edit; missing information does not earn an exemption, the same
+    fail-safe principle as the rest of this file.
+
+    Records with a non-string "ts" (a corrupted third-party track entry)
+    are also skipped -- a defensive default, does not break the max
+    computation over the rest. Non-dict elements are skipped too. An
+    empty/all-doc-only/all-broken edits list -> None (nothing to
+    compare, see _detect_staleness)."""
+    values = [e.get("ts") for e in edits
+              if isinstance(e, dict) and isinstance(e.get("ts"), str)
+              and not _is_doc_only_edit_path(e.get("file_path"))]
+    return max(values) if values else None
+
+
+def _last_green_ts(runs: list):
+    """The max ts among runs-records with outcome=="green" (WITNESS
+    ECHO STALENESS) -- the same defense against corrupted records as
+    _last_edit_ts above. No green run at all (only red, or an entirely
+    empty runs list) -> None."""
+    values = [r.get("ts") for r in runs
+              if isinstance(r, dict) and r.get("outcome") == "green"
+              and isinstance(r.get("ts"), str)]
+    return max(values) if values else None
+
+
+def _detect_staleness(runs: list, edits: list):
+    """WITNESS ECHO STALENESS (ported from HQ, this batch): "the track's
+    latest green run is dated AFTER the track's latest code edit" -- the
+    SAME invariant tools/dod_gate.py.evaluate() already enforces at
+    SubagentStop, checked again here at write time, over the whole
+    session track (any agent_id -- not just the one filed on this
+    journal line). See the module docstring, "WITNESS ECHO STALENESS",
+    for the full comparison against dod_gate.py and what is deliberately
+    NOT ported from it (per-agent filtering, the consecutive_blocks
+    safeguard -- both are dod_gate.py's own acceptance-blocking POLICY,
+    out of scope here).
+
+    Returns None (silent -- the invariant holds, OR there is nothing to
+    compare) | (last_edit_ts, last_green_ts_or_None) (violated --
+    warn_stale, see _collect_witness_events).
+
+    No edit at all in the track (last_edit_ts is None -- edits is
+    empty/all-doc-only/all-broken/None) -> None with no further check --
+    literally nothing to compare (the same "no data, no verdict"
+    principle as the rest of this file).
+
+    At least one edit: a violation is EITHER no green run at all in the
+    track (last_green_ts is None) OR the latest edit strictly later than
+    the latest green run (last_edit_ts > last_green_ts, a plain string
+    comparison -- lexicographic ISO-with-microseconds, the same trick
+    _last_by_ts already uses). An edit at EXACTLY the same ts as a green
+    run (the boundary, in practice unreachable -- microsecond
+    resolution makes a real collision vanishingly unlikely, but the
+    strict `>` stays silent on equality anyway, symmetric with
+    _detect_ts_drift elsewhere in this file) is NOT a violation -- a
+    green run is not considered stale relative to an edit that happened
+    no later than it."""
+    last_edit_ts = _last_edit_ts(edits)
+    if last_edit_ts is None:
+        return None
+    last_green_ts = _last_green_ts(runs)
+    if last_green_ts is None or last_edit_ts > last_green_ts:
+        return (last_edit_ts, last_green_ts)
+    return None
+
+
 def _group_runs_by_normalized_command(runs: list) -> dict:
     """{normalized_command: [(ts, outcome), ...]} over EVERY run in the
     track, of ANY agent_id (a builder subagent's run lives in the same
@@ -727,6 +1070,17 @@ def _collect_witness_events(new_lines: list, head_lines: list, payload: dict) ->
       5. otherwise (matched, latest run green) -> nothing added --
          complete silence on that line (same principle as TIER ECHO's
          "every measured model carries the word").
+      6. (WITNESS ECHO STALENESS, ported from HQ, INDEPENDENT of 1-5,
+         see _detect_staleness): the track is non-empty (outcome 2 did
+         not fire) AND carries at least one edit AND (no green run at
+         all, OR the latest edit is LATER than the latest green run) ->
+         ADDITIONALLY ("warn_stale", line_no, last_edit_ts,
+         last_green_ts_or_None) -- orthogonal to outcomes 3/4: the
+         SPECIFIC command cited in the witness can honestly match its
+         own latest green run (outcome 5, silent on THAT axis) while
+         the track as a whole still carries a LATER edit with no
+         re-run since -- both axes print INDEPENDENTLY for one line
+         when both fire.
 
     "note" events are NEVER printed (see build_witness_segment) --
     returned alongside warn events purely so the outcome lattice is
@@ -740,12 +1094,18 @@ def _collect_witness_events(new_lines: list, head_lines: list, payload: dict) ->
     The track is read LAZILY and AT MOST ONCE per hook call (session_id
     is shared across every line of one PostToolUse event) -- the same
     "read once" performance principle the module docstring documents
-    for disk_text/git in main()."""
+    for disk_text/git in main(). WITNESS ECHO STALENESS adds a SECOND,
+    independent lazy-once cache for edits (_load_witness_edits) -- its
+    own cache, not shared internal state with the runs cache (mirrors
+    _load_witness_edits not being a shared helper with _load_witness_runs,
+    see that function's own docstring)."""
     events = []
     session_id = payload.get("session_id") if isinstance(payload, dict) else None
     cwd = payload.get("cwd") if isinstance(payload, dict) else None
     runs_loaded = False
     runs_cache = None
+    edits_loaded = False
+    edits_cache = None
     for idx, line in enumerate(new_lines):
         line_no = len(head_lines) + idx + 1
         try:
@@ -772,6 +1132,17 @@ def _collect_witness_events(new_lines: list, head_lines: list, payload: dict) ->
                 events.append(("note", line_no, NOTE_TRACK_EMPTY))
                 continue
 
+            # WITNESS ECHO STALENESS (outcome 6 above): computed IN
+            # PARALLEL with the command matching below, not instead of
+            # it.
+            if not edits_loaded:
+                edits_cache = _load_witness_edits(cwd, session_id)
+                edits_loaded = True
+            staleness = _detect_staleness(runs_cache, edits_cache or [])
+            if staleness is not None:
+                last_edit_ts, last_green_ts = staleness
+                events.append(("warn_stale", line_no, last_edit_ts, last_green_ts))
+
             matched_any, loud = _match_witness(witness, runs_cache)
             if not matched_any:
                 events.append(("warn_soft", line_no))
@@ -794,7 +1165,15 @@ def _format_witness_line(event: tuple, ascii_only: bool) -> str:
     _now_iso() output is always clean ASCII with no control chars, so
     sanitizing it here is a no-op in the ordinary case -- it exists to
     close the adversarial edge (a corrupted/foreign track with control
-    chars or a giant ts value)."""
+    chars or a giant ts value).
+
+    "warn_stale" (WITNESS ECHO STALENESS, ported from HQ): the track's
+    ts values (last_edit_ts, and, if present, last_green_ts) are the
+    SAME kind of third-party dynamic content as cmd/ts on warn_loud
+    above, sanitized the same way. last_green_ts may be None (no green
+    run at all in the track -- see _detect_staleness) -- rendered as
+    the literal "none" (NOT sanitized -- a static ASCII literal of this
+    module, not a value out of the track)."""
     sanitize = _ascii_sanitize if ascii_only else _raw_sanitize
     kind = event[0]
     line_no = event[1]
@@ -802,6 +1181,12 @@ def _format_witness_line(event: tuple, ascii_only: bool) -> str:
         _, _, cmd, ts = event
         return (f"WITNESS ECHO: line {line_no} contradiction - command "
                 f"'{sanitize(cmd)}' recorded RED in session track (last red at {sanitize(str(ts))})")
+    if kind == "warn_stale":
+        _, _, last_edit_ts, last_green_ts = event
+        green_part = sanitize(str(last_green_ts)) if last_green_ts is not None else "none"
+        return (f"WITNESS ECHO: line {line_no} track staleness - last code edit at "
+                f"{sanitize(str(last_edit_ts))} is after the last green run (last green: "
+                f"{green_part}) - witness not confirmed by a green run after the last edit")
     # warn_soft
     return (f"WITNESS ECHO: line {line_no} witness command(s) not observed in "
             "session track (batch/cross-session/retro acceptance legitimate - verify manually)")
@@ -809,18 +1194,315 @@ def _format_witness_line(event: tuple, ascii_only: bool) -> str:
 
 def build_witness_segment(witness_events: list, ascii_only: bool = False) -> str:
     """Assembles the WITNESS ECHO part of additionalContext -- ONLY
-    from "warn_loud"/"warn_soft" events ("note" events are silent by
-    definition, see _collect_witness_events); ceiling MAX_WITNESS_LINES
-    (=5, boundary-tested at 5/6), same "+K more" pattern as
-    build_tier_segment. An empty visible-events list -> "" (the caller
-    treats an empty string as "no segment", same principle as
-    build_tier_segment)."""
-    warn_events = [e for e in witness_events if e[0] in ("warn_loud", "warn_soft")]
+    from "warn_loud"/"warn_soft"/"warn_stale" events ("warn_stale"
+    ported from HQ alongside the other two -- "note" events are silent
+    by definition, see _collect_witness_events); ceiling
+    MAX_WITNESS_LINES (=5, boundary-tested at 5/6), same "+K more"
+    pattern as build_tier_segment -- ONE shared ceiling across all
+    visible kinds together (not a separate per-kind limit: one journal
+    line can already produce several events of different kinds, see
+    _collect_witness_events outcome 6, and this is not a NEW limit --
+    MAX_WITNESS_LINES predates the staleness axis, only the list of
+    kinds it counts is extended here). An empty visible-events list ->
+    "" (the caller treats an empty string as "no segment", same
+    principle as build_tier_segment)."""
+    warn_events = [e for e in witness_events if e[0] in ("warn_loud", "warn_soft", "warn_stale")]
     if not warn_events:
         return ""
     head = warn_events[:MAX_WITNESS_LINES]
     rest = len(warn_events) - len(head)
     body = "; ".join(_format_witness_line(e, ascii_only) for e in head)
+    if rest > 0:
+        body += f"; +{rest} more"
+    return body
+
+
+# --- ESCALATION ECHO at write time (ported from HQ, batch B6, task 2:
+# R6-escalation machine guard on the write path, workstream 3 / Phase 4
+# D-0098) --------------------------------------------------------------
+# GAP (R6, CLAUDE.md "Routing rules", rule 6 here): "two `rejected`
+# events with the same task_id on the same tier make escalation
+# mandatory" was held ONLY by discipline on the write path -- the ONLY
+# existing detector was the WEEKLY CALIBRATION at HQ (a journal-shaped
+# check reading logs/routing-log.jsonl AFTER the fact, not at the
+# moment the third same-tier retry actually gets written). This layer
+# is a WARN, NOT a block (promotion to a hard block is a LATER step per
+# the code-gates-execution clause, explicitly NOT this task -- NON-GOALS
+# leave tools/journal_validator.py untouched): the same pattern TS
+# DRIFT ECHO above already applies for the F-29-equivalent case (warn
+# at write time; a hard gate is a separate, coarser instrument, not
+# engaged here).
+#
+# DETECTOR REGISTRATION (four-questions-per-mechanism rule, clause c):
+# this layer's OWN failure detector is the HOST's weekly R6-escalation
+# calibration check (CLAUDE.md rule 6 / PROCESS/WEEKLY_CALIBRATION_PROTOCOL.md
+# at HQ) -- a journal-shaped audit finding a same-tier third retry with
+# no `escalated` event anywhere above it is exactly the case this WARN
+# layer already flags at write time; a systematic miss here (a WARN
+# that should have fired and didn't) would surface there as a case the
+# calibration still had to catch post-hoc.
+#
+# TWO FORMS (identical logic to HQ's tools/journal_echo.py -- same
+# section header there, ported verbatim):
+#  1. a new `delegated` line with a numeric `attempt` >= 3: if there is
+#     NO `escalated` event with the same task_id anywhere above (base
+#     history + already-processed lines of THIS same batch) -> WARN.
+#  2. a new `delegated` line with NO `attempt` field at all, but whose
+#     task_id already has >=2 `rejected` events above sharing the SAME
+#     model, with no `escalated` event AFTER the second such rejected
+#     -> the same WARN ("a retry that forgot to carry `attempt`").
+#
+# ONE SHARED DETECTOR (_escalation_group_unsatisfied): both forms
+# reduce to ONE check -- grouping a task_id's known `rejected` events
+# by model, ANY group of size >=2 with no `escalated` event recorded
+# AFTER the SECOND (by line position) entry of that group is a
+# violation. This naturally implements both legal exceptions (boundary
+# tests on both sides -- see tools/test_journal_echo_escalation.py):
+#  - "attempt>=3 with an escalated event already above" -- an
+#    escalated event AFTER the group's second rejected clears it;
+#  - "attempt=2" -- below the >=3 threshold, form 1 never triggers
+#    (and form 2 doesn't either -- `attempt` IS present, just <3);
+#  - "attempt>=3 with rejected events on DIFFERENT tiers" -- if the
+#    task_id's rejected models never repeat (each occurs <2 times), NO
+#    group ever reaches size 2 -- vacuously "nothing to warn about"
+#    (the same mechanism silences form 2 too: without a matching model
+#    pair its own trigger condition never finds a size->=2 group).
+#
+# EXCLUDED TRIGGERS (not retries -- CLAUDE.md's Routing log section,
+# THREE legitimate forms of a REPEAT `delegated` on an open task):
+# agent=="critic" (a critic entry) AND notes carrying
+# "replaces_worker:<handle>" (journal_validator.extract_replaces_worker
+# -- REUSED, the same formula the validator already applies for its
+# own no-silent-reuse check, not hand-duplicated) -- neither is a
+# retry, both forms of this layer skip such lines outright (see
+# _check_delegated_retry).
+#
+# SOURCE OF "ABOVE" (spec: "consume ONLY the payload-scoped new lines
+# as the TRIGGER; reading the file's history for CONTEXT is fine"):
+# base_lines (payload-scoped -- see _resolve_echo_base; the primary
+# path yields the FULL disk content immediately BEFORE this specific
+# tool call, not just committed HEAD) PLUS the lines of THIS SAME batch
+# already processed (new_lines[:idx]) -- ONE linear pass
+# (_collect_escalation_events), a per-task_id state accumulated as it
+# goes; a `delegated` line is checked against state accumulated
+# STRICTLY BEFORE it (a `delegated` line itself never writes into
+# state -- the update-vs-check order is irrelevant for it, but LATER
+# lines of the SAME batch can still reference it if it happens to be
+# `rejected`/`escalated`). "pos" is a plain, monotonically increasing
+# integer line index of the single pass (base_lines, then new_lines) --
+# comparing with ">" for "escalated AFTER the second rejected" needs no
+# date parsing.
+#
+# NEVER BLOCKS (spec, literally: "exit 0, no permissionDecision"): this
+# layer never changes main()'s exit code -- the WARN goes out on the
+# SAME additionalContext/stderr channels as TIER/WITNESS/TS DRIFT (this
+# file never prints permissionDecision at all -- see the module
+# docstring, "OUTPUT").
+#
+# Fails open per line (the same pattern as _collect_tier_events/
+# _collect_ts_drift_events): a broken line's JSON, a non-dict line --
+# try/except with `continue` per line, does not interrupt parsing the
+# rest of the batch, does not crash the hook.
+MAX_ESCALATION_LINES = 5  # the same class of ceiling as MAX_TIER_LINES/
+# MAX_WITNESS_LINES/MAX_TS_DRIFT_LINES above -- own engineering
+# decision, the same number 5, the same motive (a standalone/large
+# batch with no ceiling -> unbounded additionalContext on one hook
+# call). Boundary-tested at 5/6 -- see
+# tools/test_journal_echo_escalation.py.
+
+
+def _escalation_group_unsatisfied(rejected: list, escalated: list) -> bool:
+    """True -- for this task_id there IS at least one model-group of
+    `rejected` events of size >=2 with no `escalated` event recorded
+    AFTER the second (by position) entry of that group (see the section
+    above for the full rationale -- the ONE shared detector for both
+    forms of this layer's spec, implementing both legal exceptions
+    "escalated above"/"rejected on different tiers" for free).
+
+    rejected -- [(pos, model), ...], escalated -- [pos, ...] (positions
+    are the integer line index of the single pass in
+    _collect_escalation_events, monotonically increasing). A model that
+    isn't a string (a broken/missing rejected.model) groups under its
+    actual value as a dict key (including None) -- a defensive default,
+    two records sharing the same "broken" value still form a group (does
+    not crash the check); in practice `model` is a REQUIRED field on
+    `rejected` (journal_validator), this layer does not rely on the form
+    of the lines above being valid."""
+    by_model: dict = {}
+    for pos, model in rejected:
+        by_model.setdefault(model, []).append(pos)
+    for positions in by_model.values():
+        if len(positions) >= 2:
+            second_pos = sorted(positions)[1]
+            if not any(epos > second_pos for epos in escalated):
+                return True
+    return False
+
+
+def _check_delegated_retry(obj: dict, state: dict):
+    """For ONE `delegated` line (obj -- an already-parsed dict), decides
+    whether it triggers either of the two forms of this layer's spec,
+    and if so, whether the detector (_escalation_group_unsatisfied) is
+    violated for its task_id against the accumulated state (see
+    _collect_escalation_events). Returns
+    (trigger, task_id, attempt_display) | None.
+
+    Excluded triggers (see the section above): agent=="critic" -> None
+    immediately; notes carrying "replaces_worker:<handle>"
+    (journal_validator.extract_replaces_worker(...) is not None) ->
+    None immediately -- neither is a retry, regardless of attempt/
+    task_id.
+
+    task_id missing/not a string/empty -> None (nothing to check, the
+    same fail-open principle as the rest of this file).
+
+    `attempt` -- a number (int/float, WITHOUT bool -- isinstance(x,
+    bool) is True for the literals True/False in Python, a defensive
+    guard: bool is NOT the same thing as a numeric `attempt`, even
+    though it's technically an int subclass). Form 1 (attempt>=3):
+    trigger="attempt". Form 2 (`attempt` is ABSENT --
+    obj.get("attempt") is None -- AND the task_id already has >=2
+    `rejected` events accumulated, at least potentially from one
+    model-group -- the final filter is below): trigger="no_attempt".
+    Neither -> None (including attempt=1, attempt=2, a non-numeric
+    attempt value other than None -- the spec's explicit legal cases).
+
+    Final filter: _escalation_group_unsatisfied(rejected, escalated)
+    False -> None (legitimate, see the section above). True -> a WARN
+    tuple; attempt_display is the declared `attempt` for form 1, OR
+    len(rejected)+1 for form 2 (an estimate of "which attempt number
+    this delegated line effectively IS, since the field itself was
+    forgotten" -- own engineering decision, the spec gives a literal
+    "attempt N" template only for form 1, without pinning a number for
+    form 2; documented here, flagged for Lead review)."""
+    if obj.get("agent") == "critic":
+        return None
+    if journal_validator.extract_replaces_worker(obj.get("notes")) is not None:
+        return None
+    task_id = obj.get("task_id")
+    if not isinstance(task_id, str) or not task_id:
+        return None
+    attempt = obj.get("attempt")
+    is_attempt_number = isinstance(attempt, (int, float)) and not isinstance(attempt, bool)
+    task_state = state.get(task_id, {"rejected": [], "escalated": []})
+    rejected = task_state["rejected"]
+    escalated = task_state["escalated"]
+    if is_attempt_number and attempt >= 3:
+        trigger = "attempt"
+    elif attempt is None and len(rejected) >= 2:
+        trigger = "no_attempt"
+    else:
+        return None
+    if not _escalation_group_unsatisfied(rejected, escalated):
+        return None
+    attempt_display = attempt if trigger == "attempt" else len(rejected) + 1
+    return (trigger, task_id, attempt_display)
+
+
+def _collect_escalation_events(new_lines: list, base_lines: list) -> list:
+    """One linear pass over base_lines (history -- CONTEXT, the spec
+    explicitly allows this) then new_lines (the payload-scoped TRIGGER
+    -- the check only runs on lines from here, per the spec: "consume
+    ONLY the payload-scoped new lines"). Builds per-task_id state
+    {"rejected": [(pos, model)], "escalated": [pos]} as it goes
+    (_absorb) and, on EVERY `delegated` line FROM new_lines, checks it
+    against state accumulated STRICTLY BEFORE it
+    (_check_delegated_retry) -- only THEN (not before) is that same
+    line itself absorbed into state, in case it is itself
+    rejected/escalated (a `delegated` line never is, but later lines of
+    THIS SAME batch may reference it).
+
+    line_no uses the SAME formula as TIER ECHO/WITNESS ECHO/TS DRIFT
+    ECHO (len(base_lines)+idx+1) -- consistent line numbers across the
+    whole file.
+
+    Fails open per line (the same pattern as _collect_tier_events/
+    _collect_ts_drift_events): a broken line's JSON -- try/except with
+    `continue`, does not interrupt parsing the rest of the batch."""
+    events = []
+    state: dict = {}
+
+    def _touch(task_id):
+        return state.setdefault(task_id, {"rejected": [], "escalated": []})
+
+    def _absorb(obj, pos):
+        event = obj.get("event")
+        task_id = obj.get("task_id")
+        if not isinstance(task_id, str) or not task_id:
+            return
+        if event == "rejected":
+            _touch(task_id)["rejected"].append((pos, obj.get("model")))
+        elif event == "escalated":
+            _touch(task_id)["escalated"].append(pos)
+
+    pos = 0
+    for line in base_lines:
+        pos += 1
+        try:
+            obj = json.loads(line)
+            if isinstance(obj, dict):
+                _absorb(obj, pos)
+        except Exception:
+            continue
+
+    for idx, line in enumerate(new_lines):
+        pos += 1
+        line_no = len(base_lines) + idx + 1
+        try:
+            obj = json.loads(line)
+            if not isinstance(obj, dict):
+                continue
+            if obj.get("event") == "delegated":
+                warn = _check_delegated_retry(obj, state)
+                if warn is not None:
+                    trigger, task_id, attempt_display = warn
+                    events.append((line_no, trigger, task_id, attempt_display))
+            _absorb(obj, pos)
+        except Exception:
+            continue
+    return events
+
+
+def _format_escalation_line(event: tuple, ascii_only: bool) -> str:
+    """"R6-ЗЕРКАЛО: line N attempt A без escalated по task_id T - после
+    двух rejected одного яруса эскалация обязательна" -- the spec (B6,
+    written at HQ) gives this text as a literal (Russian, matching the
+    R6 rule's own wording in CLAUDE.md's Russian text) -- kept verbatim
+    here rather than translated, the SAME choice HQ's tools/journal_echo.py
+    made for the identical layer (a literal is a literal, not a
+    paraphrase target); "line N" is added ON TOP of the literal quote,
+    by analogy with every other formatter in this file (TIER ECHO/
+    WITNESS ECHO/TS DRIFT ECHO all carry "line N" -- distinguishing
+    batch lines when joined with "; "); the task_id VALUE is
+    substituted after "по task_id" (the spec names task_id as part of
+    the message without a separate placeholder for its value -- a
+    warning with no concrete task_id would be practically useless to
+    the coordinator, the same principle WITNESS ECHO already applies
+    inserting cmd/ts, TIER ECHO inserting measured; own decision,
+    documented, flagged for Lead review). The spec's em dash ("—")
+    becomes a plain ASCII hyphen here (the same choice NOTE_RETRO/
+    NOTE_TRACK_EMPTY already made for a different literal elsewhere in
+    this file). task_id is dynamic third-party JSON content, sanitized
+    PER CHANNEL (raw for stdout, ascii for stderr), the same principle
+    _format_witness_line applies to cmd/ts."""
+    sanitize = _ascii_sanitize if ascii_only else _raw_sanitize
+    line_no, _trigger, task_id, attempt_display = event
+    return (f"R6-ЗЕРКАЛО: line {line_no} attempt {attempt_display} без escalated "
+            f"по task_id {sanitize(str(task_id))} - после двух rejected одного "
+            "яруса эскалация обязательна")
+
+
+def build_escalation_segment(escalation_events: list, ascii_only: bool = False) -> str:
+    """Assembles the ESCALATION part of additionalContext -- the SAME
+    pattern as build_tier_segment/build_ts_drift_segment (ceiling
+    MAX_ESCALATION_LINES=5 lines per call, "+K more" on top). An empty
+    escalation_events -> "" (the caller treats an empty string as "no
+    segment", same principle as the other build_* functions)."""
+    if not escalation_events:
+        return ""
+    head = escalation_events[:MAX_ESCALATION_LINES]
+    rest = len(escalation_events) - len(head)
+    body = "; ".join(_format_escalation_line(ev, ascii_only) for ev in head)
     if rest > 0:
         body += f"; +{rest} more"
     return body
@@ -899,10 +1581,34 @@ def main() -> int:
         except Exception:
             witness_events = []
         # "note" events (retro / empty track) never make a line visible
-        # -- only warn_loud/warn_soft trigger printing.
+        # -- only warn_loud/warn_soft/warn_stale trigger printing.
         witness_visible = any(e[0] != "note" for e in witness_events)
 
-        if not violations and not tier_events and not witness_visible:
+        # TS DRIFT ECHO at write time (ported from HQ, this batch): the
+        # SAME payload-scoped base as TIER ECHO/WITNESS ECHO above --
+        # `now` is the SAME variable already computed above for
+        # decide()/_get_head_text, not recomputed. Warn-only, always
+        # visible (no "note" branch, unlike WITNESS ECHO).
+        try:
+            ts_drift_events = _collect_ts_drift_events(echo_new_lines, echo_base_lines, now)
+        except Exception:
+            ts_drift_events = []
+
+        # ESCALATION ECHO (ported from HQ, batch B6, task 2 -- R6-
+        # escalation machine guard): the SAME payload-scoped base as
+        # TIER/WITNESS/TS DRIFT above (see the "ESCALATION ECHO at write
+        # time" section for how base_lines is used as history for
+        # CONTEXT while the trigger stays on echo_new_lines). Fails open
+        # as a second layer on top of the per-line try/except already
+        # inside _collect_escalation_events itself -- the same pattern
+        # as WITNESS ECHO/TS DRIFT ECHO above.
+        try:
+            escalation_events = _collect_escalation_events(echo_new_lines, echo_base_lines)
+        except Exception:
+            escalation_events = []
+
+        if (not violations and not tier_events and not witness_visible
+                and not ts_drift_events and not escalation_events):
             return 0
 
         # Fallback marker (t-277/t-279): visible ONLY when we're already
@@ -910,10 +1616,10 @@ def main() -> int:
         # silent even in fallback (see the section docstring above).
         fallback_marker = FALLBACK_MARKER_TEXT if used_fallback else ""
 
-        context_for_stdout = combine_context(violations, tier_events, witness_events,
-                                              fallback_marker, ascii_only=False)
-        context_for_stderr = combine_context(violations, tier_events, witness_events,
-                                              fallback_marker, ascii_only=True)
+        context_for_stdout = combine_context(violations, tier_events, witness_events, ts_drift_events,
+                                              escalation_events, fallback_marker, ascii_only=False)
+        context_for_stderr = combine_context(violations, tier_events, witness_events, ts_drift_events,
+                                              escalation_events, fallback_marker, ascii_only=True)
 
         sys.stderr.write(context_for_stderr + "\n")
         output = {

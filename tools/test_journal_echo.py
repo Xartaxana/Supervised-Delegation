@@ -31,6 +31,7 @@ actually passed through to subprocess.run and handled as "no HEAD").
 Run from the repo root: python -m pytest tools/test_journal_echo.py -q
 """
 
+import datetime
 import json
 import os
 import subprocess
@@ -42,6 +43,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import journal_echo  # noqa: E402
 
 SCRIPT = Path(__file__).resolve().parent / "journal_echo.py"
+
+
+def _fresh_ts(offset_seconds: int = 0) -> str:
+    """A ts fresh relative to REAL wall-clock time (this batch's
+    TS DRIFT ECHO port): the fixed fixture ts elsewhere in this file
+    ("2026-07-10T08:1x:00") would otherwise be caught as TS DRIFT STALE
+    once evaluated as a NEW line (beyond HEAD) by the now-active
+    ts-drift layer -- breaking any test asserting COMPLETE silence
+    (stdout=="") or an EXACT additionalContext string (an extra
+    "; TS DRIFT: ..." segment changes the string). Used ONLY in the
+    tests this actually breaks (see the edits below) -- tests that
+    check a substring (`in ctx`) are left on the old fixture ts
+    unchanged: the test's own semantics (TIER/WITNESS logic, not dates)
+    doesn't change, and an extra segment doesn't break a substring
+    check."""
+    return (datetime.datetime.now() + datetime.timedelta(seconds=offset_seconds)).isoformat(timespec="seconds")
 
 
 # ---------------------------------------------------------------------
@@ -450,8 +467,11 @@ def test_echo_non_journal_path_silent(tmp_path):
 
 def test_echo_git_mode_clean_new_line_silent(tmp_path):
     # DoD 2: a journal with a clean new line (a git repo with a HEAD) -> silence.
+    # ts=_fresh_ts() (this batch's TS DRIFT ECHO port): the fixed fixture
+    # ts would otherwise be caught as TS DRIFT STALE, breaking the
+    # complete-silence assertion below -- see _fresh_ts()'s own docstring.
     journal_path = _seed_committed_journal(tmp_path)
-    new_line = _line(event="delegated", ts="2026-07-10T08:10:00", task_id="t-002",
+    new_line = _line(event="delegated", ts=_fresh_ts(), task_id="t-002",
                       model="sonnet", notes="second task, clean")
     journal_path.write_text(HEAD_TEXT + new_line + "\n", encoding="utf-8")
     result = _run_hook(_post_tool_use_payload(journal_path))
@@ -518,8 +538,15 @@ def test_echo_standalone_fallback_non_git_dir_clean_silent(tmp_path):
     # The symmetric positive case for the standalone fallback: a clean
     # file in a non-git directory -> silence (not just "the fallback
     # catches a defect", but also "the fallback doesn't false-positive
-    # on a clean input").
-    _write_journal(tmp_path, HEAD_TEXT)
+    # on a clean input"). Does NOT reuse the shared HEAD_TEXT (its ts is
+    # deliberately fixed in the past -- many OTHER tests in this file
+    # rely on their own "new" fixed ts values being LATER than
+    # HEAD_TEXT's; changing HEAD_TEXT itself would break monotonicity
+    # there) -- a local FRESH line instead (this batch's TS DRIFT ECHO
+    # port; see _fresh_ts()'s own docstring), the test's own semantics
+    # (standalone fallback on clean input -> silence) unchanged.
+    fresh_line = _line(event="delegated", ts=_fresh_ts(), task_id="t-001", model="sonnet")
+    _write_journal(tmp_path, fresh_line + "\n")
     journal_path = tmp_path / "logs" / "routing-log.jsonl"
     result = _run_hook(_post_tool_use_payload(journal_path))
     assert result.returncode == 0
@@ -612,7 +639,7 @@ def test_echo_giant_line_does_not_hang(tmp_path):
     # hangs, instead of the test itself hanging forever.
     journal_path = _seed_committed_journal(tmp_path)
     giant_notes = "x" * (2 * 1024 * 1024)  # 2MB single-line payload
-    giant_line = _line(event="delegated", ts="2026-07-10T08:10:00", task_id="t-002",
+    giant_line = _line(event="delegated", ts=_fresh_ts(), task_id="t-002",
                         model="sonnet", notes=giant_notes)
     journal_path.write_text(HEAD_TEXT + giant_line + "\n", encoding="utf-8")
     result = _run_hook(_post_tool_use_payload(journal_path), timeout=20)
@@ -927,7 +954,7 @@ def test_echo_tier_dod_a_full_match_silent(tmp_path):
     journal_path = _seed_committed_journal(tmp_path)
     home = tmp_path / "home"
     _write_agent_transcript(home, "abc123", [_assistant_line("claude-sonnet-5")])
-    new_line = _line(event="delegated", ts="2026-07-10T08:10:00", task_id="t-002",
+    new_line = _line(event="delegated", ts=_fresh_ts(), task_id="t-002",
                       model="sonnet", worker_ref="agent:abc123", notes="clean tier match")
     journal_path.write_text(HEAD_TEXT + new_line + "\n", encoding="utf-8")
     result = _run_hook(_post_tool_use_payload(journal_path), env=_env_with_home(home))
@@ -944,7 +971,7 @@ def test_echo_tier_dod_b_mismatch_fable_declared_opus_measured(tmp_path):
     journal_path = _seed_committed_journal(tmp_path)
     home = tmp_path / "home"
     _write_agent_transcript(home, "fbl001", [_assistant_line("claude-opus-4-8")])
-    new_line = _line(event="delegated", ts="2026-07-10T08:10:00", task_id="t-002",
+    new_line = _line(event="delegated", ts=_fresh_ts(), task_id="t-002",
                       model="fable", worker_ref="agent:fbl001", notes="mismatch case")
     journal_path.write_text(HEAD_TEXT + new_line + "\n", encoding="utf-8")
     result = _run_hook(_post_tool_use_payload(journal_path, original_file=HEAD_TEXT),
@@ -967,7 +994,7 @@ def test_echo_tier_dod_c_mid_worker_informational_no_mismatch(tmp_path):
         home, "mid001",
         [_assistant_line("claude-fable-1"), _assistant_line("claude-sonnet-5")],
     )
-    new_line = _line(event="delegated", ts="2026-07-10T08:10:00", task_id="t-002",
+    new_line = _line(event="delegated", ts=_fresh_ts(), task_id="t-002",
                       model="fable", worker_ref="agent:mid001", notes="mid-worker case")
     journal_path.write_text(HEAD_TEXT + new_line + "\n", encoding="utf-8")
     result = _run_hook(_post_tool_use_payload(journal_path, original_file=HEAD_TEXT),
@@ -982,7 +1009,7 @@ def test_echo_tier_dod_c_mid_worker_informational_no_mismatch(tmp_path):
 def test_echo_tier_dod_d_worker_ref_cli_skipped_silent(tmp_path):
     # DoD (d), part 1: worker_ref cli:xxx -> skipped without a warning (silence).
     journal_path = _seed_committed_journal(tmp_path)
-    new_line = _line(event="accepted", ts="2026-07-10T08:10:00", task_id="t-001",
+    new_line = _line(event="accepted", ts=_fresh_ts(), task_id="t-001",
                       agent="builder", by="opus", witness="tests pass", model="sonnet",
                       worker_ref="cli:2026-07-10T08:10:00", notes="accepted via cli ref")
     journal_path.write_text(HEAD_TEXT + new_line + "\n", encoding="utf-8")
@@ -995,7 +1022,7 @@ def test_echo_tier_dod_d_worker_ref_cli_skipped_silent(tmp_path):
 def test_echo_tier_dod_d_worker_ref_retro_skipped_silent(tmp_path):
     # DoD (d), part 2: worker_ref retro:xxx -> skipped without a warning.
     journal_path = _seed_committed_journal(tmp_path)
-    new_line = _line(event="accepted", ts="2026-07-10T08:10:00", task_id="t-001",
+    new_line = _line(event="accepted", ts=_fresh_ts(), task_id="t-001",
                       agent="builder", by="opus", witness="tests pass", model="sonnet",
                       worker_ref="retro:2026-07-10T08:10:00", notes="accepted via retro ref")
     journal_path.write_text(HEAD_TEXT + new_line + "\n", encoding="utf-8")
@@ -1008,7 +1035,7 @@ def test_echo_tier_dod_d_worker_ref_retro_skipped_silent(tmp_path):
 def test_echo_tier_dod_d_worker_ref_absent_skipped_silent(tmp_path):
     # DoD (d), part 3: worker_ref absent entirely -> skipped without a warning.
     journal_path = _seed_committed_journal(tmp_path)
-    obj = {"ts": "2026-07-10T08:10:00", "event": "accepted", "agent": "builder",
+    obj = {"ts": _fresh_ts(), "event": "accepted", "agent": "builder",
            "category": "implementation", "notes": "accepted, no worker_ref field",
            "task_id": "t-001", "by": "opus", "witness": "tests pass", "model": "sonnet"}
     new_line = json.dumps(obj, ensure_ascii=False)
@@ -1023,7 +1050,7 @@ def test_echo_tier_dod_e_transcript_not_found_silent(tmp_path):
     # DoD (e): a transcript not found -> silence.
     journal_path = _seed_committed_journal(tmp_path)
     home = tmp_path / "home"  # No transcript is created here at all.
-    new_line = _line(event="delegated", ts="2026-07-10T08:10:00", task_id="t-002",
+    new_line = _line(event="delegated", ts=_fresh_ts(), task_id="t-002",
                       model="sonnet", worker_ref="agent:doesnotexist123", notes="clean")
     journal_path.write_text(HEAD_TEXT + new_line + "\n", encoding="utf-8")
     result = _run_hook(_post_tool_use_payload(journal_path), env=_env_with_home(home))
@@ -1062,7 +1089,7 @@ def test_echo_tier_dod_g_synthetic_lines_not_counted(tmp_path):
         home, "syn001",
         [_assistant_line("claude-sonnet-5"), {"type": "assistant", "message": {"model": "<synthetic>"}}],
     )
-    new_line = _line(event="delegated", ts="2026-07-10T08:10:00", task_id="t-002",
+    new_line = _line(event="delegated", ts=_fresh_ts(), task_id="t-002",
                       model="sonnet", worker_ref="agent:syn001", notes="synthetic filtered")
     journal_path.write_text(HEAD_TEXT + new_line + "\n", encoding="utf-8")
     result = _run_hook(_post_tool_use_payload(journal_path), env=_env_with_home(home))
@@ -1134,7 +1161,7 @@ def test_echo_tier_worker_ref_agent_empty_id_boundary_silent(tmp_path):
     # Boundary: worker_ref == "agent:" (an empty id) -- the full
     # pipeline, silence.
     journal_path = _seed_committed_journal(tmp_path)
-    new_line = _line(event="delegated", ts="2026-07-10T08:10:00", task_id="t-002",
+    new_line = _line(event="delegated", ts=_fresh_ts(), task_id="t-002",
                       model="fable", worker_ref="agent:", notes="empty agent id")
     journal_path.write_text(HEAD_TEXT + new_line + "\n", encoding="utf-8")
     result = _run_hook(_post_tool_use_payload(journal_path))

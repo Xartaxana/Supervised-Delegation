@@ -11,6 +11,14 @@ sampling (self-tagged synthetic traffic; real-traffic gate G1).
 Named *_runner.py, not *_test.py, to stay outside the pytest glob (see
 tools_stream_check.py docstring for the same convention).
 
+Corpus slicing rule (ported from HQ): each row is replayed as one
+non-streaming, single-turn call (build_payload's "stream": False) with
+the FULL expected output produced in that one turn. A "whole files"
+candidate whose expected output alone runs bigger than ~25K tokens is
+NOT runnable this way in one hop -- when such a candidate is added to
+a regression set, slice it into parts before adding rows, rather than
+adding one oversized row.
+
 Usage:
     python gateway/regression_runner.py --model builder
     python gateway/regression_runner.py --model builder --max-n 3 --pace 0.5

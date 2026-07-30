@@ -82,7 +82,7 @@ add rows freely, never remove the standard ones without recording why):
 | Kit mechanism | Status | Basis / trigger |
 |---|---|---|
 | Routing policy (CLAUDE.md core rules, Role != tier, Lead degradation, command hygiene) | | |
-| Role profiles (`.claude/agents/{scout,builder,critic}.md`) | | |
+| Role profiles (`.claude/agents/{scout,builder,critic,designer}.md`) | | |
 | Model binding (`delegation.config.yaml`) | | |
 | Routing journal + validator (`logs/routing-log.jsonl`, `tools/journal_validator.py` pre-commit, `tools/journal_echo.py` PostToolUse) | | |
 | Mechanism gate + symmetry map (`tools/mechanism_gate.py`, `.githooks/commit-msg`, `docs/SIBLING_MAP.md`) | | |

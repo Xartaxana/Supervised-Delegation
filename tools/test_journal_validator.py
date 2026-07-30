@@ -474,29 +474,265 @@ def test_matrix_scout_accepted_by_higher_tier_passes():
     assert code == 0
 
 
-def test_matrix_scout_accepted_same_tier_with_basis_passes():
+def test_matrix_scout_accepted_same_tier_with_basis_now_fails_below_sonnet_floor():
+    # CORRECTED (batch B7, 2026-07-24): this used to assert code==0 under
+    # the old membership check ("basis in BASIS_VALUES", no by/agent pair
+    # check) -- the exact class of hole the AO3 07-24 incident exposed
+    # (queued-to-lead passing membership regardless of WHICH by/agent).
+    # by="haiku" is a KNOWN tier strictly below sonnet -- "Role != tier"
+    # matrix: "below Sonnet: no coordination is provided for" -- no basis
+    # rescues it now.
     staged = _staged(_line(event="accepted", ts="2026-07-10T08:10:00", agent="scout",
                             model="haiku", task_id="t-001", by="haiku", basis="queued-to-lead",
-                            notes="basis fallback"))
-    code, violations = jv.decide(staged, HEAD_TEXT, NOW)
-    assert code == 0
-
-
-def test_matrix_non_claude_by_requires_basis():
-    staged = _staged(_line(event="accepted", ts="2026-07-10T08:10:00", agent="builder",
-                            model="sonnet", task_id="t-001", witness="w", by="gemini-2.5-flash",
-                            notes="non-Claude by, no basis"))
+                            notes="basis fallback -- now illegal, by below sonnet"))
     code, violations = jv.decide(staged, HEAD_TEXT, NOW)
     assert code == 1
     assert any("role-vs-tier" in v for v in violations)
 
 
-def test_matrix_non_claude_by_with_basis_critic_passes():
+def test_matrix_model_id_in_by_fails_as_unknown_tier():
+    # RENAMED (critic verdict on t-323, 2026-07-28): the old names/claims
+    # here were stale. (a) test_matrix_non_claude_by_with_basis_critic_passes
+    # asserted code==0 for a full model id in "by" with basis="critic" --
+    # that was EXACTLY the AO3 07-24 hole this batch closes, and became a
+    # verbatim duplicate of test_b7_1_sonnet_by_builder_agent_critic_basis_ok
+    # once "by" was corrected to a legal tier word -- deleted, no
+    # information lost. (b) this test (test_matrix_non_claude_by_requires_basis)
+    # asserted "requires basis" as if that were still a distinct rule --
+    # it is not: a full model id in "by" is now simply an UNKNOWN-TIER
+    # value, and fails identically WITH or WITHOUT basis (the enum gate
+    # runs before any basis is even inspected). A model id belongs in
+    # "model", never in "by" -- "by" is always a bare TIER_ORDER keyword,
+    # even for non-Claude workers.
+    staged_no_basis = _staged(_line(event="accepted", ts="2026-07-10T08:10:00", agent="builder",
+                                     model="sonnet", task_id="t-001", witness="w",
+                                     by="gemini-2.5-flash",
+                                     notes="model id in by, no basis -- unknown tier, not 'requires basis'"))
+    code, violations = jv.decide(staged_no_basis, HEAD_TEXT, NOW)
+    assert code == 1
+    assert any("is not a known tier" in v for v in violations), violations
+
+    staged_critic_basis = _staged(_line(event="accepted", ts="2026-07-10T08:10:00", agent="builder",
+                                         model="sonnet", task_id="t-001", witness="w",
+                                         by="gemini-2.5-flash", basis="critic",
+                                         notes="model id in by, critic basis -- still unknown tier, still fails"))
+    code, violations = jv.decide(staged_critic_basis, HEAD_TEXT, NOW)
+    assert code == 1
+    assert any("is not a known tier" in v for v in violations), violations
+
+
+# ---- t-323: unknown "by" fails the D-0058 matrix UNCONDITIONALLY (port
+# of AO3's own fix, their calibration #4, commit 30e79c8) -- a "by"
+# outside TIER_ORDER is never legalized by any basis, including
+# "judge"; the enum/shape check runs BEFORE every branch of
+# _matrix_d0058_violation. ----
+
+def test_t323_unknown_by_fails_even_with_critic_basis():
     staged = _staged(_line(event="accepted", ts="2026-07-10T08:10:00", agent="builder",
-                            model="sonnet", task_id="t-001", witness="w", by="gemini-2.5-flash",
-                            basis="critic", notes="non-Claude by, critic basis"))
+                            model="sonnet", task_id="t-001", witness="w", by="banana",
+                            basis="critic", notes="unknown by, critic basis -- must fail (t-323)"))
     code, violations = jv.decide(staged, HEAD_TEXT, NOW)
-    assert code == 0
+    assert code == 1
+    assert any("is not a known tier" in v and "banana" in v for v in violations), violations
+
+
+def test_t323_unknown_by_case_sensitive_fails_not_via_queued_to_lead_branch():
+    # "Sonnet" (capitalized) is NOT the same key as "sonnet" in
+    # TIER_ORDER -- case sensitivity is part of the enum check itself,
+    # not a separate rule; must fail via the NEW unknown-by branch, not
+    # the queued-to-lead pair-message (rule e).
+    staged = _staged(_line(event="accepted", ts="2026-07-10T08:10:00", agent="scout",
+                            model="haiku", task_id="t-001", by="Sonnet", basis="queued-to-lead",
+                            notes="capitalized by -- unknown tier, not the legal 'sonnet' (t-323)"))
+    code, violations = jv.decide(staged, HEAD_TEXT, NOW)
+    assert code == 1
+    assert any("is not a known tier" in v for v in violations), violations
+    assert not any("queued-to-lead" in v for v in violations), violations
+
+
+def test_t323_unknown_by_fails_before_judge_branch_even_on_leaf_category():
+    # the enum/shape check runs BEFORE basis=="judge" is even inspected
+    # -- an unknown by fails even on a leaf-class category, where judge
+    # would otherwise be by-independent (staff fix t-276).
+    staged = _staged(_line(event="accepted", ts="2026-07-10T08:10:00", agent="builder",
+                            model="sonnet", task_id="t-001", witness="w", by="banana",
+                            basis="judge", category="implementation",
+                            notes="unknown by, judge basis, leaf category -- still fails (t-323)"))
+    code, violations = jv.decide(staged, HEAD_TEXT, NOW)
+    assert code == 1
+    assert any("is not a known tier" in v for v in violations), violations
+    assert not any("leaf-class dispatch" in v for v in violations), violations
+
+
+def test_t323_boundary_fable_known_tier_still_passes_via_ok_tier():
+    obj = json.loads(_line(event="accepted", ts="2026-07-10T08:10:00", agent="critic",
+                            model="opus", task_id="t-001", by="fable",
+                            notes="fable is a KNOWN tier -- ok_tier unaffected by t-323"))
+    assert "basis" not in obj
+    staged = _staged(json.dumps(obj, ensure_ascii=False))
+    code, violations = jv.decide(staged, HEAD_TEXT, NOW)
+    assert code == 0, violations
+
+
+def test_t323_boundary_haiku_known_tier_floor_message_unchanged():
+    # regression pin: "haiku" IS a known tier (present in TIER_ORDER) --
+    # the NEW unknown-by branch must NOT fire for it; the pre-existing
+    # floor message (rule c) still names it, byte-for-byte unchanged by
+    # t-323.
+    staged = _staged(_line(event="accepted", ts="2026-07-10T08:10:00", agent="builder",
+                            model="sonnet", task_id="t-001", witness="w", by="haiku",
+                            basis="critic", notes="known tier below sonnet -- floor, not the new branch"))
+    code, violations = jv.decide(staged, HEAD_TEXT, NOW)
+    assert code == 1
+    assert any("tier below sonnet" in v for v in violations), violations
+    assert not any("is not a known tier" in v for v in violations), violations
+
+
+# ---- batch B7 (2026-07-24): D-0058 pair-legality table --
+# membership-in-set replaced by legality-per-(by, agent)-pair, after the
+# AO3 07-24 leak (two different Sonnet coordinators accepted Sonnet-class
+# (builder) results via basis=queued-to-lead -- their log_append and the
+# old validator both checked basis only by set membership). Numbered
+# cases below match the dispatch's DoD battery 1..8 verbatim (ported
+# from the staff sibling's same-day fix). ----
+
+def test_b7_1_sonnet_by_builder_agent_critic_basis_ok():
+    # (1) by=sonnet/agent=builder/basis=critic -> OK (critic-tier opus is
+    # strictly above builder-tier sonnet).
+    staged = _staged(_line(event="accepted", ts="2026-07-10T08:10:00", agent="builder",
+                            model="sonnet", task_id="t-001", witness="w", by="sonnet",
+                            basis="critic", notes="B7 case 1: builder accepted by sonnet with critic basis"))
+    code, violations = jv.decide(staged, HEAD_TEXT, NOW)
+    assert code == 0, violations
+
+
+def test_b7_2_sonnet_by_builder_agent_queued_to_lead_fails_ao3_case():
+    # (2) by=sonnet/agent=builder/basis=queued-to-lead -> FAIL -- the
+    # EXACT AO3 07-24 leak pattern: a sonnet-tier coordinator accepting a
+    # sonnet-class (builder) result via the "queued-to-lead" escape hatch,
+    # which the matrix reserves for critic-class work only.
+    staged = _staged(_line(event="accepted", ts="2026-07-10T08:10:00", agent="builder",
+                            model="sonnet", task_id="t-001", witness="w", by="sonnet",
+                            basis="queued-to-lead",
+                            notes="B7 case 2 (AO3 leak pattern): builder accepted by sonnet via queued-to-lead"))
+    code, violations = jv.decide(staged, HEAD_TEXT, NOW)
+    assert code == 1
+    assert any("role-vs-tier" in v and "queued-to-lead" in v and "builder" in v and "sonnet" in v
+               for v in violations), violations
+
+
+def test_b7_3_sonnet_by_critic_agent_queued_to_lead_ok():
+    # (3) by=sonnet/agent=critic/basis=queued-to-lead -> OK (critic-class
+    # work queued to the Lead through a sonnet coordinator is legal --
+    # exactly the pair the AO3 hole must NOT block).
+    staged = _staged(_line(event="accepted", ts="2026-07-10T08:10:00", agent="critic",
+                            model="opus", task_id="t-001", by="sonnet", basis="queued-to-lead",
+                            notes="B7 case 3: critic accepted by sonnet via queued-to-lead"))
+    code, violations = jv.decide(staged, HEAD_TEXT, NOW)
+    assert code == 0, violations
+
+
+def test_b7_4_opus_by_critic_agent_queued_to_lead_ok():
+    # (4) by=opus/agent=critic/basis=queued-to-lead -> OK (equal tier,
+    # the matrix explicitly allows the queue for critic-class work at an
+    # opus coordinator).
+    staged = _staged(_line(event="accepted", ts="2026-07-10T08:10:00", agent="critic",
+                            model="opus", task_id="t-001", by="opus", basis="queued-to-lead",
+                            notes="B7 case 4: critic accepted by opus via queued-to-lead"))
+    code, violations = jv.decide(staged, HEAD_TEXT, NOW)
+    assert code == 0, violations
+
+
+def test_b7_5_opus_by_builder_agent_no_basis_ok_via_ok_tier():
+    # (5) by=opus/agent=builder, no basis at all -> OK (ok_tier: opus
+    # strictly above builder-tier sonnet -- no basis needed).
+    obj = json.loads(_line(event="accepted", ts="2026-07-10T08:10:00", agent="builder",
+                            model="sonnet", task_id="t-001", witness="w", by="opus",
+                            notes="B7 case 5: builder accepted by opus, no basis, ok_tier"))
+    assert "basis" not in obj
+    staged = _staged(json.dumps(obj, ensure_ascii=False))
+    code, violations = jv.decide(staged, HEAD_TEXT, NOW)
+    assert code == 0, violations
+
+
+def test_b7_6_haiku_by_scout_agent_critic_basis_fork_decision_fails():
+    # (6) by=haiku/agent=scout/basis=critic -- THE decision fork named in
+    # the dispatch: the core rule's literal text ("OR the decision
+    # carries a higher tier's input (a critic verdict)") would read this
+    # as legal (critic-tier opus IS strictly above scout-tier haiku,
+    # satisfying the basis="critic" rule in isolation). But the Role !=
+    # tier matrix's "below Sonnet" row says, without exception, "no
+    # coordination is provided for" -- a haiku-tier session is not a
+    # functioning coordinator at all in this structure, regardless of
+    # what verdict got attached to its acceptance event. DECISION
+    # (documented per the dispatch's explicit instruction not to resolve
+    # this silently): the floor wins -- FAIL. Both quotes:
+    #   core: "the decision carries a higher tier's input (a critic
+    #   verdict)"
+    #   matrix: "| below Sonnet | no coordination is provided for | -- |"
+    # Implemented as the FLOOR (checked before the basis=="critic"
+    # branch) so it takes precedence for any by with a KNOWN tier
+    # strictly below sonnet -- i.e. by=="haiku" specifically. basis==
+    # "judge" is the one carve-out (checked first, unaffected by this
+    # floor -- t-276/toolkit-native leaf-judge pairs with by=haiku remain
+    # legal, see test_matrix_judge_basis_passes_on_recon_category above).
+    staged = _staged(_line(event="accepted", ts="2026-07-10T08:10:00", agent="scout",
+                            model="haiku", task_id="t-001", by="haiku", basis="critic",
+                            notes="B7 case 6 (decision fork): scout accepted by haiku with critic basis"))
+    code, violations = jv.decide(staged, HEAD_TEXT, NOW)
+    assert code == 1
+    assert any("role-vs-tier" in v and "haiku" in v for v in violations), violations
+
+
+def test_b7_boundary_fable_by_critic_agent_ok_via_ok_tier_no_basis_needed():
+    # boundary companion to case 5/e: by=fable/agent=critic needs no
+    # basis at all -- ok_tier alone covers it (fable strictly above opus).
+    obj = json.loads(_line(event="accepted", ts="2026-07-10T08:10:00", agent="critic",
+                            model="opus", task_id="t-001", by="fable",
+                            notes="fable accepts critic, no basis, ok_tier"))
+    assert "basis" not in obj
+    staged = _staged(json.dumps(obj, ensure_ascii=False))
+    code, violations = jv.decide(staged, HEAD_TEXT, NOW)
+    assert code == 0, violations
+
+
+def test_b7_boundary_sonnet_by_critic_agent_no_basis_fails():
+    # boundary companion to case 3: SAME pair (by=sonnet, agent=critic)
+    # WITHOUT queued-to-lead -- must still FAIL (equal tier, no rescuing
+    # basis at all).
+    staged = _staged(_line(event="accepted", ts="2026-07-10T08:10:00", agent="critic",
+                            model="opus", task_id="t-001", by="sonnet",
+                            notes="critic accepted by sonnet, no basis at all"))
+    code, violations = jv.decide(staged, HEAD_TEXT, NOW)
+    assert code == 1
+    assert any("role-vs-tier" in v for v in violations), violations
+
+
+def test_b7_boundary_haiku_by_builder_agent_queued_to_lead_fails_floor():
+    # boundary: by=haiku (known tier below sonnet) with agent=builder and
+    # basis=queued-to-lead -- the floor fires before the queued-to-lead
+    # branch is even reached; message must name the floor, not the
+    # generic queued-to-lead pair message.
+    staged = _staged(_line(event="accepted", ts="2026-07-10T08:10:00", agent="builder",
+                            model="sonnet", task_id="t-001", witness="w", by="haiku",
+                            basis="queued-to-lead",
+                            notes="builder accepted by haiku via queued-to-lead -- floor, not pair message"))
+    code, violations = jv.decide(staged, HEAD_TEXT, NOW)
+    assert code == 1
+    assert any("tier below sonnet" in v for v in violations), violations
+
+
+def test_b7_boundary_haiku_by_judge_basis_leaf_still_passes_unaffected_by_floor():
+    # boundary: by=haiku with basis=judge on a leaf category is NOT
+    # touched by the new floor -- judge is checked first, independent of
+    # by's tier (calibrated-judge acceptance is not a coordinator-tier
+    # resolution at all). Regression lock alongside
+    # test_matrix_judge_basis_passes_on_recon_category.
+    staged = _staged(_line(event="accepted", ts="2026-07-10T08:10:00", agent="scout",
+                            model="haiku", task_id="t-001", by="haiku", basis="judge",
+                            category="recon", notes="judge on leaf, by=haiku -- floor does not apply"))
+    code, violations = jv.decide(staged, HEAD_TEXT, NOW)
+    assert code == 0, violations
 
 
 def test_matrix_agent_lead_needs_only_presence_of_by():
@@ -515,6 +751,125 @@ def test_matrix_rejected_only_needs_by_present_no_tier_check():
                             by="haiku", notes="rejected, same-tier by, no basis"))
     code, violations = jv.decide(staged, HEAD_TEXT, NOW)
     assert code == 0
+
+
+# ---- designer tier addendum (AGENT_TIER += "designer": "opus"):
+# designer's deployment binding is opus (.claude/agents/designer.md),
+# same tier as critic. ----
+
+def test_matrix_designer_accepted_by_fable_passes():
+    staged = _staged(_line(event="accepted", ts="2026-07-10T08:10:00", agent="designer",
+                            model="opus", task_id="t-001", by="fable",
+                            notes="fable accepts designer's draft"))
+    code, violations = jv.decide(staged, HEAD_TEXT, NOW)
+    assert code == 0, violations
+
+
+def test_matrix_designer_accepted_by_opus_without_basis_fails_equal_tier():
+    # designer's own tier is opus (same as critic) -- an equal-tier
+    # acceptance with no basis at all must still fail the matrix, same
+    # class as test_matrix_scout_accepted_by_same_tier_without_basis_fails
+    # above.
+    staged = _staged(_line(event="accepted", ts="2026-07-10T08:10:00", agent="designer",
+                            model="opus", task_id="t-001", by="opus",
+                            notes="peer accepting peer, no basis"))
+    code, violations = jv.decide(staged, HEAD_TEXT, NOW)
+    assert code == 1
+    assert any("role-vs-tier" in v for v in violations), violations
+
+
+def test_matrix_agent_outside_agent_tier_regression_pin():
+    # Regression pin: an agent name OUTSIDE AGENT_TIER (e.g. "analyst")
+    # is documented, pre-existing behavior -- the matrix is simply not
+    # defined for it (return None before any branch), unchanged by the
+    # designer addition above.
+    staged = _staged(_line(event="accepted", ts="2026-07-10T08:10:00", agent="analyst",
+                            model="haiku", task_id="t-001", by="haiku",
+                            notes="agent outside AGENT_TIER -- matrix not applied"))
+    code, violations = jv.decide(staged, HEAD_TEXT, NOW)
+    assert code == 0, violations
+
+
+# ---- branch (5) queued-to-lead generalized to the upper-mid-tier CLASS
+# (QUEUED_TO_LEAD_AGENTS = {critic, designer}), not the literal name
+# "critic"; branch (1) judge narrowed to agent in {scout, builder} (a
+# critic finding: designer+judge+category=implementation used to pass
+# wrongly, since only category was checked, not agent). ----
+
+def test_matrix_designer_by_opus_queued_to_lead_passes():
+    staged = _staged(_line(event="accepted", ts="2026-07-10T08:10:00", agent="designer",
+                            model="opus", task_id="t-001", by="opus", basis="queued-to-lead",
+                            notes="designer queued to Lead via an opus coordinator"))
+    code, violations = jv.decide(staged, HEAD_TEXT, NOW)
+    assert code == 0, violations
+
+
+def test_matrix_designer_by_sonnet_queued_to_lead_passes():
+    # the queue is legal from ANY coordinator tier not above designer's
+    # own (sonnet here) -- same class as the existing critic/sonnet case.
+    staged = _staged(_line(event="accepted", ts="2026-07-10T08:10:00", agent="designer",
+                            model="opus", task_id="t-001", by="sonnet", basis="queued-to-lead",
+                            notes="designer queued to Lead via a sonnet coordinator"))
+    code, violations = jv.decide(staged, HEAD_TEXT, NOW)
+    assert code == 0, violations
+
+
+def test_matrix_designer_by_opus_critic_basis_fails():
+    # basis="critic" does NOT rescue designer -- critic (opus) is not
+    # strictly above designer's own opus tier, same as it doesn't
+    # rescue agent="critic" itself.
+    staged = _staged(_line(event="accepted", ts="2026-07-10T08:10:00", agent="designer",
+                            model="opus", task_id="t-001", by="opus", basis="critic",
+                            notes="designer accepted by opus via critic basis -- must fail"))
+    code, violations = jv.decide(staged, HEAD_TEXT, NOW)
+    assert code == 1
+    assert any("role-vs-tier" in v and "designer" in v for v in violations), violations
+    # the fixed message names the ACTUAL agent and the actually-legal
+    # path -- no stale advice about a literal agent='critic' path.
+    assert not any("agent='critic'" in v for v in violations), violations
+
+
+def test_matrix_designer_judge_basis_fails_regardless_of_category():
+    for category in ("recon", "implementation", "review", None):
+        kw = {} if category is None else {"category": category}
+        staged = _staged(_line(event="accepted", ts="2026-07-10T08:10:00", agent="designer",
+                                model="opus", task_id="t-001", by="opus", basis="judge",
+                                notes="designer via judge -- must fail regardless of category",
+                                **kw))
+        code, violations = jv.decide(staged, HEAD_TEXT, NOW)
+        assert code == 1, (category, violations)
+
+
+def test_matrix_builder_judge_basis_implementation_still_passes_not_broken():
+    # regression pin: the narrowing to agent in {scout, builder} must
+    # not break the existing builder+judge+leaf-category path.
+    staged = _staged(_line(event="accepted", ts="2026-07-10T08:10:00", agent="builder",
+                            model="sonnet", task_id="t-001", witness="w", by="sonnet",
+                            basis="judge", category="implementation",
+                            notes="builder via judge on implementation -- still legal"))
+    code, violations = jv.decide(staged, HEAD_TEXT, NOW)
+    assert code == 0, violations
+
+
+def test_matrix_scout_judge_basis_recon_still_passes_not_broken():
+    staged = _staged(_line(event="accepted", ts="2026-07-10T08:10:00", agent="scout",
+                            model="haiku", task_id="t-001", by="haiku",
+                            basis="judge", category="recon",
+                            notes="scout via judge on recon -- still legal"))
+    code, violations = jv.decide(staged, HEAD_TEXT, NOW)
+    assert code == 0, violations
+
+
+def test_matrix_critic_judge_basis_leaf_category_now_fails():
+    # a critic finding, adjacent surface: agent="critic" itself is ALSO
+    # excluded from judge acceptance now (the review/spec class, not
+    # just designer) -- even on an otherwise-leaf category.
+    staged = _staged(_line(event="accepted", ts="2026-07-10T08:10:00", agent="critic",
+                            model="opus", task_id="t-001", by="opus",
+                            basis="judge", category="implementation",
+                            notes="critic via judge on implementation -- now fails"))
+    code, violations = jv.decide(staged, HEAD_TEXT, NOW)
+    assert code == 1, violations
 
 
 # ---- 11b. basis "judge" -- legal ONLY on a leaf-class dispatch

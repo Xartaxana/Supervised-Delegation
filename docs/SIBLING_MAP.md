@@ -26,7 +26,7 @@ diff and the map, not against the whole codebase.
 | Component | Path |
 |---|---|
 | Routing policy | CLAUDE.md |
-| Role profiles | .claude/agents/{scout,builder,critic}.md |
+| Role profiles | .claude/agents/{scout,builder,critic,designer}.md |
 | Model binding | delegation.config.yaml |
 | Routing journal | logs/routing-log.jsonl |
 
@@ -34,7 +34,7 @@ A rule change in CLAUDE.md that touches a role's duties (what it must
 report, verify, or must not do) is checked against that role's profile
 in the same commit. A binding change in delegation.config.yaml never
 changes rule text — CLAUDE.md and the profiles speak in function names
-only (scout/builder/critic/lead), never in model names.
+only (scout/builder/critic/designer/lead), never in model names.
 
 ## Axis 2 — Per-tier exam instruments
 
@@ -45,13 +45,16 @@ only (scout/builder/critic/lead), never in model names.
 | PROCESS/LEAD_RANKING_EXAM.md (vignettes) | lead candidates |
 | gateway/judge_calibration.json + PROCESS/JUDGE_CALIBRATION_PROTOCOL.md | judge (api-keys contour) |
 | witness-based acceptance on every task — NO set, by design | builder |
+| Lead acceptance of every draft — NO set, by design; auto-binds to the critic's model and inherits its exam when the model is the same | designer |
 
 A change to the exam DISCIPLINE itself (keys pre-registered before
 dispatch, unmarked delivery, contamination check, re-run triggers,
 Runs-log format, the agent-definition cache caveat) is checked for
 portability across every row of this axis; a new tier set enters
 this map in the same commit. The builder row is a recorded decision
-(execution-based acceptance beats a one-time set), not an omission.
+(execution-based acceptance beats a one-time set), not an omission;
+so is the designer row (every draft passes Lead acceptance before any
+dispatch uses it, and a same-model binding inherits the critic exam).
 
 ## Keeping the map up to date
 

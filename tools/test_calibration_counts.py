@@ -506,3 +506,93 @@ def test_unclosed_closes_token_trailing_punctuation(tmp_path):
     ])
     report = analyze_journal(str(p), None, None, parse_ts("2026-07-16T00:00:00"))
     assert report["unclosed_tasks"] == []
+
+
+# ---------------------------------------------------------------------
+# accepted_tids (journal law, mirroring session_context.py): ANY
+# accepted closes its task_id unconditionally, regardless of file
+# position or ts. The load-bearing case: an orphan delegated inserted
+# IN THE FILE after its own accepted (file position lies, ts is
+# truthful) -- a plain last-lifecycle-status-by-position scan would
+# wrongly list that task as still open.
+# ---------------------------------------------------------------------
+def test_accepted_closes_task_even_when_orphan_delegated_is_later_in_file(tmp_path):
+    p = tmp_path / "j.jsonl"
+    write_journal(p, [
+        ev("2026-07-10T00:00:00", "delegated", agent="scout", model="haiku",
+           task_id="t-099", category="recon", notes="n"),
+        ev("2026-07-10T00:10:00", "accepted", agent="lead", model="fable",
+           task_id="t-099", by="fable", category="recon", notes="n"),
+        # Orphan delegated: written LATER in the file, but its own ts is
+        # EARLIER than the accepted above (a ts-unordered segment) --
+        # file position lies, ts is truthful; this must NOT reopen the
+        # task for this counter.
+        ev("2026-07-09T23:00:00", "delegated", agent="scout", model="haiku",
+           task_id="t-099", category="recon", notes="retro/duplicate entry"),
+    ])
+    report = analyze_journal(str(p), None, None, parse_ts("2026-07-16T00:00:00"))
+    assert report["unclosed_tasks"] == []
+
+
+def test_accepted_with_empty_or_non_string_task_id_ignored_no_crash(tmp_path):
+    p = tmp_path / "j.jsonl"
+    write_journal(p, [
+        ev("2026-07-15T00:00:00", "delegated", agent="scout", model="haiku",
+           task_id="t-003", category="recon", notes="n"),
+        ev("2026-07-15T00:10:00", "accepted", agent="lead", model="fable",
+           task_id="", by="fable", category="recon", notes="n"),
+        ev("2026-07-15T00:20:00", "accepted", agent="lead", model="fable",
+           task_id=123, by="fable", category="recon", notes="n"),
+    ])
+    report = analyze_journal(str(p), None, None, parse_ts("2026-07-16T00:00:00"))
+    # Neither malformed accepted closes t-003 -- it is still genuinely
+    # open (a plain delegated with no real accepted of its own).
+    assert report["unclosed_tasks"] == ["t-003"]
+
+
+def test_empty_journal_no_accepted_output_unchanged(tmp_path):
+    """Regression pin: an empty journal (no accepted at all) produces
+    the same unclosed-tasks output as before this fix -- an empty
+    list, no crash on the new accepted_tids machinery."""
+    p = tmp_path / "j.jsonl"
+    write_journal(p, [])
+    report = analyze_journal(str(p), None, None, parse_ts("2026-07-16T00:00:00"))
+    assert report["unclosed_tasks"] == []
+    assert report["closed_by_decomposable"] == []
+
+
+def test_last_status_decomposable_with_accepted_closed_by_accepted_not_decomposable(tmp_path):
+    """Order pin: when a task's last lifecycle status (by file order) is
+    decomposable BUT it also carries an accepted somewhere in the
+    journal, accepted_tids is checked FIRST -- the task is closed via
+    the accepted path, not counted in closed_by_decomposable."""
+    p = tmp_path / "j.jsonl"
+    write_journal(p, [
+        ev("2026-07-15T00:00:00", "delegated", agent="scout", model="haiku",
+           task_id="t-004", category="recon", notes="n"),
+        ev("2026-07-15T00:10:00", "decomposable", agent="scout", model="haiku",
+           task_id="t-004", category="recon", notes="decomposable into parts"),
+        ev("2026-07-15T00:20:00", "accepted", agent="lead", model="fable",
+           task_id="t-004", by="fable", category="recon", notes="n"),
+    ])
+    report = analyze_journal(str(p), None, None, parse_ts("2026-07-16T00:00:00"))
+    assert report["unclosed_tasks"] == []
+    assert report["closed_by_decomposable"] == []
+
+
+def test_closes_token_and_accepted_both_present_no_double_counting(tmp_path):
+    """Both a closes: token AND a real accepted close the same task --
+    it must appear closed (not in unclosed_tasks), counted once, no
+    double-accounting artifact."""
+    p = tmp_path / "j.jsonl"
+    write_journal(p, [
+        ev("2026-07-15T00:00:00", "delegated", agent="builder", model="sonnet",
+           task_id="t-005", category="implementation", notes="n"),
+        ev("2026-07-15T00:10:00", "accepted", agent="lead", model="fable",
+           task_id="t-005", by="fable", category="implementation", notes="n"),
+        ev("2026-07-15T00:20:00", "dispatch_skipped", agent="builder", model="sonnet",
+           category="implementation", notes="small-work batch; closes:t-005"),
+    ])
+    report = analyze_journal(str(p), None, None, parse_ts("2026-07-16T00:00:00"))
+    assert report["unclosed_tasks"] == []
+    assert report["closed_by_decomposable"] == []

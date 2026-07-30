@@ -17,6 +17,7 @@ from usage_report import (
     CACHE_WRITE_MULTIPLIER,
     PRICES_PER_TOKEN_USD,
     SCHEMA,
+    SKIP_MODELS,
     accounted_cost,
     backfill_costs,
     build_report,
@@ -489,6 +490,60 @@ def test_haiku_bare_id_also_priced():
     cost, warning = accounted_cost("claude-haiku-4-5", 1_000_000, 0, 0, 0)
     assert warning is None
     assert cost == pytest.approx(1.00)
+
+
+# ---------------------------------------------------------------------
+# claude-opus-5 pricing (a newly-bound model must never be a silent
+# $0): positive control (a priced model) and its negative control (a
+# totally unknown model id) in the same shape.
+# ---------------------------------------------------------------------
+
+
+def test_claude_opus_5_is_priced_identically_to_opus_4_8():
+    cost, warning = accounted_cost(
+        "claude-opus-5", 1_000_000, 1_000_000, 0, 0,
+    )
+    assert warning is None
+    assert cost == pytest.approx(5.00 + 25.00)
+    assert PRICES_PER_TOKEN_USD["claude-opus-5"] == PRICES_PER_TOKEN_USD["claude-opus-4-8"]
+
+
+def test_totally_unknown_model_id_yields_cost_none_never_zero():
+    """Negative control for the positive claim above: an unrecognized
+    model id must yield cost=None (an unpriced window stays visibly
+    unpriced), never a silent 0.0."""
+    cost, warning = accounted_cost("totally-unknown-model-xyz", 1_000_000, 1_000_000, 0, 0)
+    assert cost is None
+    assert cost != 0.0
+
+
+def test_empty_and_none_model_id_yield_cost_none_no_exception():
+    cost_empty, _ = accounted_cost("", 1_000_000, 0, 0, 0)
+    assert cost_empty is None
+    cost_none, _ = accounted_cost(None, 1_000_000, 0, 0, 0)
+    assert cost_none is None
+
+
+def test_prices_per_token_usd_existing_rows_unchanged():
+    """Regression pin: the pre-existing price rows are untouched by the
+    claude-opus-5 addition."""
+    assert PRICES_PER_TOKEN_USD["claude-fable-5"] == (10.00 / 1_000_000, 50.00 / 1_000_000)
+    assert PRICES_PER_TOKEN_USD["claude-opus-4-8"] == (5.00 / 1_000_000, 25.00 / 1_000_000)
+    assert PRICES_PER_TOKEN_USD["claude-sonnet-5"] == (3.00 / 1_000_000, 15.00 / 1_000_000)
+    assert PRICES_PER_TOKEN_USD["claude-sonnet-4-6"] == (3.00 / 1_000_000, 15.00 / 1_000_000)
+    assert PRICES_PER_TOKEN_USD["claude-haiku-4-5-20251001"] == (1.00 / 1_000_000, 5.00 / 1_000_000)
+    assert PRICES_PER_TOKEN_USD["claude-haiku-4-5"] == (1.00 / 1_000_000, 5.00 / 1_000_000)
+
+
+def test_claude_opus_5_only_bare_form_no_dated_variant():
+    """Only the bare "claude-opus-5" id is priced -- unlike haiku, no
+    dated variant has been observed for this model, so none is added
+    (SKIP_MODELS is also unchanged by this addition)."""
+    assert "claude-opus-5" in PRICES_PER_TOKEN_USD
+    assert not any(
+        model_id.startswith("claude-opus-5-") for model_id in PRICES_PER_TOKEN_USD
+    )
+    assert SKIP_MODELS == {"<synthetic>"}
 
 
 def test_backfill_fills_agent_fields_and_null_costs_idempotently(tmp_path, db_file):

@@ -32,6 +32,7 @@ result for this task type.
 | Data extraction, format conversion | Medium | Low | scout | estimated |
 | Classification, tagging | Low | Low | scout | estimated |
 | Dispatch of an already-scoped task to a tier | Low | Low | a deterministic rule, not an LLM call | estimated |
+| Spec drafting from an intent brief (forks returned, not decided) | High | High (drafting; acceptance stays Lead) | designer | estimated |
 
 Flat delegation (CLAUDE.md): workers never spawn workers. Parallelism
 means Lead launches several workers with independent specs; a worker

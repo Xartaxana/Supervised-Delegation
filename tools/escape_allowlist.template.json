@@ -7,7 +7,14 @@
     "",
     "To use this mechanism: copy this file to escape_allowlist.json next",
     "to it, delete this '_comment' key, and replace the one example entry",
-    "below with your own real escape/concession clause(s).",
+    "below with your own real escape/concession clause(s). The",
+    "'judge_prompt_pin' section below is ALREADY REAL (not a placeholder",
+    "like the example entry) -- it pins this toolkit's own",
+    "gateway/shadow_eval.py JUDGE_SYSTEM_PROMPT constant, recomputed with",
+    "'python tools/escape_check.py --hash-judge-prompt' against this",
+    "toolkit's shipped copy of that file; re-run that command and update",
+    "'sha256' here in the same commit if you intentionally edit the judge",
+    "prompt.",
     "",
     "Each entry hash-pins ONE permanent escape/concession clause in a",
     "carrier document (e.g. CLAUDE.md) to the decision-log section that",
@@ -37,6 +44,12 @@
     "  affirmed       YYYY-MM-DD the entry was last reviewed/re-affirmed.",
     "  note           optional free-text context for a future reader."
   ],
+  "judge_prompt_pin": {
+    "source": "gateway/shadow_eval.py",
+    "symbol": "JUDGE_SYSTEM_PROMPT",
+    "sha256": "179b700690a76bfad799123b1e70dc7d9d59d9a845886682acf77e63e56ae9e1",
+    "evidence": "computed via 'python tools/escape_check.py --hash-judge-prompt' against this toolkit's shipped gateway/shadow_eval.py (2026-07-24 port batch); re-verify against your own judge-calibration protocol before relying on it for real acceptance"
+  },
   "entries": [
     {
       "id": "example-entry-replace-me",

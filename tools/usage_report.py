@@ -244,6 +244,14 @@ _TASK7_NEW_COLUMNS = ("agent_id", "agent_type")
 # Unknown models get cost=None (Rule #1: never a silent $0). Do NOT
 # add a model here without a verified source -- guessing is exactly
 # what Rule #1 forbids.
+#
+# Reconciliation with gateway/config.yaml: if a gateway alias ever
+# gains an explicit litellm_params.input_cost_per_token /
+# output_cost_per_token override there, that becomes a SECOND numeric
+# price for the same model id -- re-diff this table against
+# gateway/config.yaml whenever such an override appears, since two
+# independently-maintained numbers for one model is exactly the kind
+# of silent divergence this table exists to avoid.
 CACHE_WRITE_MULTIPLIER = 1.25  # 5-minute TTL write premium
 CACHE_READ_MULTIPLIER = 0.1
 
@@ -251,6 +259,13 @@ PRICES_PER_TOKEN_USD = {
     # model_id: (input_price, output_price)
     "claude-fable-5": (10.00 / 1_000_000, 50.00 / 1_000_000),
     "claude-opus-4-8": (5.00 / 1_000_000, 25.00 / 1_000_000),
+    # A newly-bound model must never be a silent $0 (class: an unknown
+    # model id yields cost=None here, so a whole real usage window can
+    # run entirely unpriced until the table is updated). Official list
+    # price, identical to claude-opus-4-8 above ($5/M input, $25/M
+    # output) -- same CACHE_WRITE_MULTIPLIER/CACHE_READ_MULTIPLIER apply
+    # to both, no separate multiplier needed.
+    "claude-opus-5": (5.00 / 1_000_000, 25.00 / 1_000_000),
     "claude-sonnet-5": (3.00 / 1_000_000, 15.00 / 1_000_000),
     "claude-sonnet-4-6": (3.00 / 1_000_000, 15.00 / 1_000_000),
     # Scout tier (Delegated Task 7, GAP 2): $1.00/$5.00 per 1M tokens,

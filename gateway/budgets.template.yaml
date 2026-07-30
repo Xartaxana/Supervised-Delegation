@@ -35,3 +35,53 @@ quota_windows:
       limit_tokens: 100000
     - window_seconds: 60
       limit_tokens: 12000
+
+# quota_pools: several gateway aliases can share ONE provider key's
+# physical quota ceiling (e.g. two aliases hitting the same free-tier
+# key). A pool wall sums prompt_tokens+completion_tokens across ALL of
+# its `aliases` in the window, same sliding-window semantics as
+# quota_windows above. Checked AFTER each alias's own quota_windows
+# wall (guard.py, Guard.async_pre_call_hook): a per-alias block fires
+# first. Absent key = no pools configured, no-op (same "missing means
+# no wall" convention as quota_windows). Uncomment and adjust aliases/
+# limits to your own shared provider key:
+#
+# quota_pools:
+#   shared_key_1:
+#     aliases: [builder, lead]
+#     windows:
+#       - window_seconds: 86400
+#         limit_tokens: 100000
+
+# projection: closes the gap where the walls above only look at
+# ALREADY-LOGGED spend, so one large request could cross a $ budget or
+# a token quota mid-flight. Absent entirely (as in this file today) ==
+# byte-for-byte old behavior for the $ wall; the TOKEN wall's
+# projection (quota_windows/quota_pools above) always estimates the
+# current request's PROMPT tokens regardless of this section
+# (guard.py module docstring), but its OUTPUT side stays invisible
+# (assumed 0) until assumed_max_output_tokens is set here. Uncomment
+# and adjust to enable:
+#
+# projection:
+#   # Upper bound assumed for a request's completion tokens when it
+#   # has no explicit max_tokens. Either a single number (applies to
+#   # every alias) or a {default, <alias>: N} map (alias overrides
+#   # default) -- same convention as daily_usd above.
+#   assumed_max_output_tokens:
+#     default: 2048
+#     builder: 1024
+#   # Explicit $ prices per 1000 tokens, per alias. An alias listed
+#   # here gets $-projection blocking (spent + projected_usd >=
+#   # budget); an alias with a daily_usd entry but NO price here
+#   # either fail-closes (below) or gets a once-per-day
+#   # "no usd_prices entry" warning -- Guard never guesses a price.
+#   usd_prices:
+#     lead:
+#       prompt_per_1k: 0.003
+#       completion_per_1k: 0.015
+#   # Aliases that must REFUSE a request (HTTP 429) rather than run it
+#   # unprojected when no usd_prices entry exists -- for
+#   # expensive/production aliases where an unprojected large request
+#   # is not an acceptable risk.
+#   fail_closed_aliases: []

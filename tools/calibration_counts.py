@@ -288,6 +288,33 @@ def analyze_journal(path: str, window_start: Optional[datetime], window_end: Opt
     for pl in parsed_lines:
         for closed_tid in extract_closes_tokens(pl.data.get("notes")):
             closed_via_token.add(closed_tid)
+    # Unclosed-tasks fix, part (3): mirror session_context.
+    # open_dispatches()'s JOURNAL LAW -- ANY accepted closes its task_id
+    # UNCONDITIONALLY, regardless of file position or ts (the journal's
+    # own append-only contract forbids reopening an accepted task). The
+    # class this catches: an orphan delegated inserted IN THE FILE after
+    # its own accepted (file position lies, ts is truthful) -- a plain
+    # last-write-wins-by-position scan (last_status above, with no such
+    # law) would list that task "open" simply because the orphan
+    # delegated is processed strictly after the accepted that already
+    # closed it. Collected across the WHOLE file (parsed_lines, not just
+    # the window) -- the same coverage as last_status and
+    # closed_via_token above. Applied POINTEDLY only in the "Unclosed
+    # tasks" section (10) below -- last_status itself is NOT rewritten
+    # (the duplicate_delegates classification above keys off prior_status
+    # as already computed; changing that is a separate question outside
+    # this fix's scope). Acknowledged divergence from session_context:
+    # this script does NOT reproduce the full (ts, file_idx) semantics
+    # for delegated/closes: tokens (see the closed-by-token comment
+    # above) -- it prints CANDIDATES, not a binding verdict (module
+    # docstring).
+    accepted_tids: set = set()
+    for pl in parsed_lines:
+        if pl.data.get("event") != "accepted":
+            continue
+        tid = pl.data.get("task_id")
+        if isinstance(tid, str) and tid:
+            accepted_tids.add(tid)
     duplicate_delegates = []
     for pl in parsed_lines:
         d = pl.data
@@ -417,11 +444,19 @@ def analyze_journal(path: str, window_start: Optional[datetime], window_end: Opt
     # A prior review finding: "open" is the last lifecycle status being
     # delegated (decomposable is now also a lifecycle status, see above
     # -- it closes), AND the task is not marked by a closes: token
-    # anywhere in the journal's notes.
+    # anywhere in the journal's notes, AND the task carries no accepted
+    # anywhere in the journal (accepted_tids above -- JOURNAL LAW, mirror
+    # of session_context.open_dispatches(), unconditional and checked
+    # BEFORE the decomposable/delegated status branches -- closes even
+    # when the last lifecycle event BY FILE POSITION is delegated; see
+    # the comment at accepted_tids's definition for the orphan-delegated
+    # class this class of bug belongs to).
     unclosed_tasks = []
     closed_by_decomposable = []
     for tid, status in last_status.items():
         if tid in closed_via_token:
+            continue
+        if tid in accepted_tids:
             continue
         if status == "decomposable":
             closed_by_decomposable.append(tid)
